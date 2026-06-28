@@ -1,6 +1,7 @@
 'use client'
 
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useState, useRef } from 'react'
+import { useRouter } from 'next/navigation'
 import {
   Wallet, LayoutDashboard, Building2, Users, Briefcase, FolderTree,
   Receipt, ShieldCheck, FileCheck2, ScanLine, QrCode, Sparkles, Bell,
@@ -8,11 +9,12 @@ import {
   CheckCircle2, XCircle, Clock, ChevronRight, Settings, IndianRupee,
   Filter, Download, Crown, Banknote, Hotel, Plane, Utensils, Fuel,
   ShoppingBag, Coffee, ChevronDown, Database, Activity, Target, PieChart as PieIcon,
-  CheckCheck, X, Loader2, Zap, BadgeCheck
+  CheckCheck, X, Loader2, Zap, BadgeCheck, Bot, Send, Calendar, Layers,
+  Menu, LogOut, Smartphone, BookOpen, ListChecks, Brain
 } from 'lucide-react'
 import {
   AreaChart, Area, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip,
-  ResponsiveContainer, PieChart, Pie, Cell, Legend, LineChart, Line,
+  ResponsiveContainer, PieChart, Pie, Cell, Legend, LineChart, Line, RadialBarChart, RadialBar,
 } from 'recharts'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card'
@@ -27,6 +29,8 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Separator } from '@/components/ui/separator'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
+import { Sheet, SheetContent, SheetTrigger } from '@/components/ui/sheet'
+import { ScrollArea } from '@/components/ui/scroll-area'
 import { toast } from 'sonner'
 
 const inr = (n) => '₹' + Number(n || 0).toLocaleString('en-IN')
@@ -46,11 +50,26 @@ const ROLES = ['Super Admin', 'Finance Head', 'Finance Executive', 'Department M
 
 // ───────────────────────────────── App ─────────────────────────────────
 function App() {
+  const router = useRouter()
+  const [authUser, setAuthUser] = useState(null)
+  const [authChecked, setAuthChecked] = useState(false)
   const [role, setRole] = useState('Finance Head')
   const [view, setView] = useState('finance')
+  const [mobileNav, setMobileNav] = useState(false)
   const [data, setData] = useState({ org: null, departments: [], projects: [], employees: [], budgets: [], policies: [], transactions: [], approvals: [], kpis: null })
   const [loading, setLoading] = useState(true)
   const [bootError, setBootError] = useState(null)
+
+  // Auth gate
+  useEffect(() => {
+    try {
+      const u = JSON.parse(localStorage.getItem('corpay_user') || 'null')
+      if (!u) { router.replace('/login'); return }
+      setAuthUser(u)
+      if (u.role) setRole(u.role)
+      setAuthChecked(true)
+    } catch { router.replace('/login') }
+  }, [router])
 
   const refresh = async () => {
     try {
@@ -72,6 +91,7 @@ function App() {
   }
 
   useEffect(() => {
+    if (!authChecked) return
     (async () => {
       setLoading(true)
       try {
@@ -82,28 +102,38 @@ function App() {
         await refresh()
       } catch (e) { setBootError(e.message); setLoading(false) }
     })()
-  }, [])
+  }, [authChecked])
 
   const currentEmployee = useMemo(() => {
+    if (authUser) {
+      const u = data.employees.find(e => e.email === authUser.email)
+      if (u) return u
+    }
     if (role === 'Employee') return data.employees.find(e => e.role === 'Employee') || data.employees[0]
     if (role === 'Finance Head') return data.employees.find(e => e.role === 'Finance Head') || data.employees[0]
     if (role === 'Finance Executive') return data.employees.find(e => e.role === 'Finance Executive') || data.employees[0]
     if (role === 'Department Manager') return data.employees.find(e => e.role === 'Department Manager') || data.employees[0]
     return data.employees[0]
-  }, [role, data.employees])
+  }, [role, data.employees, authUser])
 
+  if (!authChecked) return <BootScreen/>
   if (loading) return <BootScreen />
   if (bootError) return <div className="p-10 text-red-600">Failed to load: {bootError}</div>
 
-  const ctx = { data, refresh, role, setRole, view, setView, currentEmployee }
+  const ctx = { data, refresh, role, setRole, view, setView, currentEmployee, mobileNav, setMobileNav, authUser, setAuthUser }
 
   return (
     <div className="min-h-screen bg-[#F8FAFC] flex">
-      <Sidebar {...ctx} />
+      <div className="hidden md:flex"><Sidebar {...ctx}/></div>
+      <Sheet open={mobileNav} onOpenChange={setMobileNav}>
+        <SheetContent side="left" className="p-0 w-64 bg-[#0F172A] border-r-0">
+          <Sidebar {...ctx} onItemClick={() => setMobileNav(false)}/>
+        </SheetContent>
+      </Sheet>
       <div className="flex-1 flex flex-col min-w-0">
         <TopBar {...ctx} />
         <main className="flex-1 overflow-auto">
-          <div className="p-8 max-w-[1600px] mx-auto">
+          <div className="p-4 md:p-8 max-w-[1600px] mx-auto">
             {view === 'executive' && <ExecutiveDashboard {...ctx} />}
             {view === 'finance' && <FinanceDashboard {...ctx} />}
             {view === 'wallet' && <WalletDashboard {...ctx} />}
@@ -113,6 +143,9 @@ function App() {
             {view === 'approvals' && <ApprovalsView {...ctx} />}
             {view === 'transactions' && <TransactionsView {...ctx} />}
             {view === 'organization' && <OrganizationView {...ctx} />}
+            {view === 'coach' && <PolicyCoachView {...ctx} />}
+            {view === 'costcenters' && <CostCenterView {...ctx} />}
+            {view === 'closure' && <MonthlyClosureView {...ctx} />}
           </div>
         </main>
       </div>
@@ -137,7 +170,7 @@ function BootScreen() {
 }
 
 // ───────────────────────────────── Sidebar ─────────────────────────────────
-function Sidebar({ view, setView, role }) {
+function Sidebar({ view, setView, role, onItemClick }) {
   const nav = [
     { group: 'OVERVIEW', items: [
       { id: 'executive', label: 'Executive', icon: Crown, roles: ['Super Admin','Finance Head'] },
@@ -149,14 +182,20 @@ function Sidebar({ view, setView, role }) {
       { id: 'transactions', label: 'Transactions', icon: Receipt, roles: ROLES },
       { id: 'approvals', label: 'Approvals', icon: FileCheck2, roles: ROLES },
     ]},
+    { group: 'INTELLIGENCE', items: [
+      { id: 'coach', label: 'AI Policy Coach', icon: Bot, roles: ROLES, highlight: true, badge: 'AI' },
+      { id: 'costcenters', label: 'Cost Centers', icon: Layers, roles: ['Super Admin','Finance Head','Finance Executive'] },
+      { id: 'closure', label: 'Monthly Closure', icon: Calendar, roles: ['Super Admin','Finance Head','Finance Executive'] },
+    ]},
     { group: 'GOVERNANCE', items: [
       { id: 'budgets', label: 'Budgets', icon: Banknote, roles: ['Super Admin','Finance Head','Finance Executive','Department Manager'] },
       { id: 'policies', label: 'Policies', icon: ShieldCheck, roles: ['Super Admin','Finance Head'] },
       { id: 'organization', label: 'Organization', icon: Building2, roles: ['Super Admin','Finance Head'] },
     ]},
   ]
+  const handleClick = (id) => { setView(id); onItemClick?.() }
   return (
-    <aside className="w-64 bg-[#0F172A] text-slate-200 flex flex-col sticky top-0 h-screen">
+    <aside className="w-64 bg-[#0F172A] text-slate-200 flex flex-col md:sticky md:top-0 md:h-screen h-full">
       <div className="px-6 py-6 flex items-center gap-2.5 border-b border-slate-800">
         <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-blue-500 to-blue-700 flex items-center justify-center shadow-lg shadow-blue-500/30">
           <Wallet className="w-5 h-5 text-white" />
@@ -175,15 +214,14 @@ function Sidebar({ view, setView, role }) {
               const Icon = i.icon
               const active = view === i.id
               return (
-                <button key={i.id} onClick={() => setView(i.id)}
+                <button key={i.id} onClick={() => handleClick(i.id)}
                   className={`w-full text-left px-3 py-2 rounded-lg flex items-center gap-3 text-sm mb-0.5 transition-all ${
-                    active
-                      ? 'bg-blue-600/20 text-white ring-1 ring-blue-500/30'
-                      : 'text-slate-300 hover:bg-slate-800/60 hover:text-white'
+                    active ? 'bg-blue-600/20 text-white ring-1 ring-blue-500/30' : 'text-slate-300 hover:bg-slate-800/60 hover:text-white'
                   }`}>
                   <Icon className={`w-4 h-4 ${active ? 'text-blue-400' : 'text-slate-400'}`} />
                   <span className="flex-1">{i.label}</span>
-                  {i.highlight && !active && <span className="text-[9px] px-1.5 py-0.5 rounded-full bg-blue-500/20 text-blue-300 font-semibold">UPI</span>}
+                  {i.badge === 'AI' && !active && <span className="text-[9px] px-1.5 py-0.5 rounded-full bg-purple-500/20 text-purple-300 font-semibold">AI</span>}
+                  {i.highlight && i.badge !== 'AI' && !active && <span className="text-[9px] px-1.5 py-0.5 rounded-full bg-blue-500/20 text-blue-300 font-semibold">UPI</span>}
                 </button>
               )
             })}
@@ -204,24 +242,24 @@ function Sidebar({ view, setView, role }) {
 }
 
 // ───────────────────────────────── Top Bar ─────────────────────────────────
-function TopBar({ role, setRole, view, data, currentEmployee }) {
+function TopBar({ role, setRole, view, data, currentEmployee, setMobileNav }) {
+  const router = useRouter()
   const titles = {
-    executive: 'Executive Dashboard',
-    finance: 'Finance Dashboard',
-    wallet: 'My Wallet',
-    scan: 'Scan & Pay',
-    budgets: 'Budget Allocation',
-    policies: 'Spending Policies',
-    approvals: 'Approvals',
-    transactions: 'Transactions',
-    organization: 'Organization',
+    executive: 'Executive Dashboard', finance: 'Finance Dashboard', wallet: 'My Wallet',
+    scan: 'Scan & Pay', budgets: 'Budget Allocation', policies: 'Spending Policies',
+    approvals: 'Approvals', transactions: 'Transactions', organization: 'Organization',
+    coach: 'AI Policy Coach', costcenters: 'Cost Centers', closure: 'Monthly Closure',
   }
+  const logout = () => { localStorage.removeItem('corpay_user'); router.push('/login') }
   return (
     <header className="bg-white border-b border-slate-200 sticky top-0 z-20">
-      <div className="px-8 h-16 flex items-center gap-6">
-        <div>
-          <div className="text-[11px] text-slate-500 font-medium">{data.org?.name || 'Organization'}</div>
-          <div className="text-base font-semibold text-slate-900 leading-none mt-0.5">{titles[view]}</div>
+      <div className="px-4 md:px-8 h-16 flex items-center gap-3 md:gap-6">
+        <Button variant="ghost" size="icon" className="md:hidden -ml-2" onClick={() => setMobileNav(true)}>
+          <Menu className="w-5 h-5"/>
+        </Button>
+        <div className="min-w-0">
+          <div className="text-[11px] text-slate-500 font-medium truncate">{data.org?.name || 'Organization'}</div>
+          <div className="text-base font-semibold text-slate-900 leading-none mt-0.5 truncate">{titles[view]}</div>
         </div>
 
         <div className="flex-1 max-w-md hidden lg:block">
@@ -231,20 +269,15 @@ function TopBar({ role, setRole, view, data, currentEmployee }) {
           </div>
         </div>
 
-        <div className="ml-auto flex items-center gap-3">
+        <div className="ml-auto flex items-center gap-2 md:gap-3">
           <Select value={role} onValueChange={setRole}>
-            <SelectTrigger className="w-[180px] h-9 bg-slate-50 border-slate-200">
-              <div className="flex items-center gap-2">
-                <BadgeCheck className="w-3.5 h-3.5 text-blue-600" />
-                <SelectValue />
-              </div>
+            <SelectTrigger className="w-[140px] md:w-[180px] h-9 bg-slate-50 border-slate-200">
+              <div className="flex items-center gap-2 min-w-0"><BadgeCheck className="w-3.5 h-3.5 text-blue-600 shrink-0" /><SelectValue /></div>
             </SelectTrigger>
-            <SelectContent>
-              {ROLES.map(r => <SelectItem key={r} value={r}>{r}</SelectItem>)}
-            </SelectContent>
+            <SelectContent>{ROLES.map(r => <SelectItem key={r} value={r}>{r}</SelectItem>)}</SelectContent>
           </Select>
 
-          <Button variant="ghost" size="icon" className="relative">
+          <Button variant="ghost" size="icon" className="relative hidden sm:inline-flex">
             <Bell className="w-5 h-5 text-slate-600" />
             {data.approvals?.filter(a => a.status === 'Pending').length > 0 && (
               <span className="absolute top-1.5 right-1.5 w-2 h-2 rounded-full bg-red-500 ring-2 ring-white" />
@@ -274,6 +307,8 @@ function TopBar({ role, setRole, view, data, currentEmployee }) {
               <DropdownMenuItem onClick={async () => { await fetch('/api/seed', { method: 'POST' }); toast.success('Demo data reset'); location.reload() }}>
                 <Database className="w-4 h-4 mr-2" />Reset demo data
               </DropdownMenuItem>
+              <DropdownMenuSeparator/>
+              <DropdownMenuItem onClick={logout} className="text-red-600"><LogOut className="w-4 h-4 mr-2"/>Sign out</DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
         </div>
@@ -423,22 +458,67 @@ function FinanceDashboard({ data, setView }) {
 function ExecutiveDashboard({ data }) {
   const k = data.kpis || {}
   const utilization = k.utilization || 0
+  const [insight, setInsight] = useState(null)
+  const [genLoading, setGenLoading] = useState(false)
+  const generate = async () => {
+    setGenLoading(true)
+    try {
+      const r = await fetch('/api/llm/forecast', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ kpis: k }) }).then(r => r.json())
+      if (r.insight) setInsight(r.insight); else toast.error('Could not generate forecast')
+    } catch (e) { toast.error('Forecast failed') } finally { setGenLoading(false) }
+  }
   return (
     <div className="space-y-6">
-      <div className="rounded-2xl gradient-card p-8 text-white relative overflow-hidden">
+      <div className="rounded-2xl gradient-card p-6 md:p-8 text-white relative overflow-hidden">
         <div className="absolute -top-10 -right-10 w-64 h-64 rounded-full bg-blue-500/20 blur-3xl"></div>
         <div className="relative">
           <div className="flex items-center gap-2 text-blue-200 text-xs font-semibold mb-2"><Crown className="w-3.5 h-3.5"/>EXECUTIVE COMMAND CENTER</div>
-          <h1 className="text-4xl font-bold tracking-tight">Welcome back, CFO</h1>
-          <p className="text-slate-300 mt-1.5">Here is your real-time view of <span className="font-semibold text-white">{data.org?.name}</span> spending posture.</p>
-          <div className="mt-8 grid grid-cols-2 lg:grid-cols-4 gap-6">
-            <div><div className="text-blue-200 text-xs mb-1">Organization Spend</div><div className="text-3xl font-bold tracking-tight">{inr(k.totalSpent)}</div><div className="text-emerald-300 text-xs mt-1 flex items-center gap-1"><ArrowUpRight className="w-3 h-3"/>{utilization}% of budget</div></div>
-            <div><div className="text-blue-200 text-xs mb-1">Allocated</div><div className="text-3xl font-bold tracking-tight">{inr(k.totalAllocated)}</div><div className="text-slate-300 text-xs mt-1">{data.budgets.length} active budgets</div></div>
-            <div><div className="text-blue-200 text-xs mb-1">Pending Actions</div><div className="text-3xl font-bold tracking-tight">{k.pendingCount}</div><div className="text-amber-300 text-xs mt-1">requires CFO review</div></div>
-            <div><div className="text-blue-200 text-xs mb-1">Policy Breaches</div><div className="text-3xl font-bold tracking-tight">{k.violations}</div><div className="text-red-300 text-xs mt-1">blocked at transaction</div></div>
+          <h1 className="text-2xl md:text-4xl font-bold tracking-tight">Welcome back, CFO</h1>
+          <p className="text-slate-300 mt-1.5 text-sm md:text-base">Here is your real-time view of <span className="font-semibold text-white">{data.org?.name}</span> spending posture.</p>
+          <div className="mt-6 md:mt-8 grid grid-cols-2 lg:grid-cols-4 gap-4 md:gap-6">
+            <div><div className="text-blue-200 text-xs mb-1">Organization Spend</div><div className="text-2xl md:text-3xl font-bold tracking-tight">{inr(k.totalSpent)}</div><div className="text-emerald-300 text-xs mt-1 flex items-center gap-1"><ArrowUpRight className="w-3 h-3"/>{utilization}% of budget</div></div>
+            <div><div className="text-blue-200 text-xs mb-1">Allocated</div><div className="text-2xl md:text-3xl font-bold tracking-tight">{inr(k.totalAllocated)}</div><div className="text-slate-300 text-xs mt-1">{data.budgets.length} active budgets</div></div>
+            <div><div className="text-blue-200 text-xs mb-1">Pending Actions</div><div className="text-2xl md:text-3xl font-bold tracking-tight">{k.pendingCount}</div><div className="text-amber-300 text-xs mt-1">requires CFO review</div></div>
+            <div><div className="text-blue-200 text-xs mb-1">Policy Breaches</div><div className="text-2xl md:text-3xl font-bold tracking-tight">{k.violations}</div><div className="text-red-300 text-xs mt-1">blocked at transaction</div></div>
           </div>
         </div>
       </div>
+
+      {/* AI Forecast strip */}
+      <Card className="border-slate-200/80 shadow-sm bg-gradient-to-br from-purple-50 to-blue-50 ring-1 ring-purple-200/50">
+        <CardContent className="p-6">
+          <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+            <div className="flex items-start gap-3">
+              <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-purple-500 to-blue-600 flex items-center justify-center shadow-lg shadow-purple-500/30 shrink-0"><Brain className="w-5 h-5 text-white"/></div>
+              <div>
+                <div className="flex items-center gap-2"><div className="font-semibold text-slate-900">AI Spend Forecast</div><Badge className="bg-purple-100 text-purple-700 hover:bg-purple-100 text-[10px]">GPT-4o-mini</Badge></div>
+                <div className="text-xs text-slate-600 mt-0.5">Generate CFO-grade insight from live KPIs</div>
+              </div>
+            </div>
+            <Button onClick={generate} disabled={genLoading} className="bg-gradient-to-r from-purple-600 to-blue-600 hover:from-purple-700 hover:to-blue-700 gap-2 shrink-0">
+              {genLoading ? <Loader2 className="w-4 h-4 animate-spin"/> : <Sparkles className="w-4 h-4"/>}
+              {genLoading ? 'Analyzing…' : (insight ? 'Regenerate' : 'Generate Forecast')}
+            </Button>
+          </div>
+          {insight && (
+            <div className="mt-5 grid grid-cols-1 md:grid-cols-3 gap-4">
+              <div className="md:col-span-3 p-4 rounded-xl bg-white border border-slate-200">
+                <div className="text-[10px] uppercase tracking-widest text-purple-600 font-semibold mb-1">Executive Insight</div>
+                <div className="text-sm font-semibold text-slate-900">{insight.headline}</div>
+                <div className="text-sm text-slate-600 mt-2">{insight.forecast}</div>
+              </div>
+              <div className="p-4 rounded-xl bg-white border border-red-100">
+                <div className="text-[10px] uppercase tracking-widest text-red-600 font-semibold mb-2 flex items-center gap-1"><AlertTriangle className="w-3 h-3"/>Risks</div>
+                {(insight.risks || []).map((r, i) => <div key={i} className="text-xs text-slate-700 leading-relaxed mb-1.5 flex gap-1.5"><span className="text-red-500">•</span>{r}</div>)}
+              </div>
+              <div className="md:col-span-2 p-4 rounded-xl bg-white border border-emerald-100">
+                <div className="text-[10px] uppercase tracking-widest text-emerald-600 font-semibold mb-2 flex items-center gap-1"><ListChecks className="w-3 h-3"/>Recommended Actions</div>
+                {(insight.actions || []).map((a, i) => <div key={i} className="text-xs text-slate-700 leading-relaxed mb-1.5 flex gap-1.5"><CheckCircle2 className="w-3 h-3 text-emerald-600 shrink-0 mt-0.5"/>{a}</div>)}
+              </div>
+            </div>
+          )}
+        </CardContent>
+      </Card>
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         <Card className="lg:col-span-2 border-slate-200/80 shadow-sm">
@@ -1158,7 +1238,7 @@ function TransactionsView({ data }) {
         <div><h1 className="text-3xl font-bold text-slate-900 tracking-tight">Transactions</h1><p className="text-sm text-slate-500 mt-1">Every UPI tap, fully attributed to employee, project, cost center and budget.</p></div>
         <div className="flex gap-2">
           <Button variant="outline" size="sm" className="gap-1.5"><Filter className="w-4 h-4"/>Filter</Button>
-          <Button variant="outline" size="sm" className="gap-1.5"><Download className="w-4 h-4"/>Export CSV</Button>
+          <Button variant="outline" size="sm" className="gap-1.5" onClick={() => window.open('/api/transactions/export', '_blank')}><Download className="w-4 h-4"/>Export CSV</Button>
         </div>
       </div>
       <Card className="border-slate-200/80 shadow-sm">
@@ -1271,6 +1351,214 @@ function OrganizationView({ data }) {
 
 function Field({ label, value }) {
   return <div><div className="text-[10px] uppercase tracking-widest text-slate-500">{label}</div><div className="font-semibold text-sm text-slate-900 mt-1">{value || '—'}</div></div>
+}
+
+// ───────────────────────────────── AI POLICY COACH ─────────────────────────────────
+function PolicyCoachView({ data, currentEmployee }) {
+  const [messages, setMessages] = useState([
+    { role: 'assistant', content: `Hi ${currentEmployee?.name?.split(' ')[0] || 'there'} — I'm your CORPAY Policy Coach. Ask me about spending limits, approval thresholds, or whether a specific expense is allowed.` }
+  ])
+  const [input, setInput] = useState('')
+  const [loading, setLoading] = useState(false)
+  const scrollRef = useRef(null)
+  useEffect(() => { scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: 'smooth' }) }, [messages])
+
+  const send = async () => {
+    if (!input.trim() || loading) return
+    const question = input.trim()
+    const history = messages.filter(m => m.role !== 'system')
+    setMessages([...messages, { role: 'user', content: question }])
+    setInput(''); setLoading(true)
+    try {
+      const r = await fetch('/api/llm/coach', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ question, history }) }).then(r => r.json())
+      setMessages(m => [...m, { role: 'assistant', content: r.answer || 'Sorry, I had trouble responding.' }])
+    } catch (e) { setMessages(m => [...m, { role: 'assistant', content: 'Error reaching AI service.' }]) } finally { setLoading(false) }
+  }
+
+  const suggestions = [
+    'Can I spend ₹2,500 on a hotel?',
+    'What\u2019s my daily limit?',
+    'Is buying coffee at Starbucks allowed?',
+    'Do I need approval for ₹6,000 flight tickets?',
+  ]
+
+  return (
+    <div className="max-w-5xl mx-auto">
+      <div className="text-center mb-6 md:mb-8">
+        <Badge variant="outline" className="border-purple-200 bg-purple-50 text-purple-700 mb-3"><Brain className="w-3 h-3 mr-1"/>Powered by Emergent LLM</Badge>
+        <h1 className="text-2xl md:text-3xl font-bold text-slate-900 tracking-tight">AI Policy Coach</h1>
+        <p className="text-sm text-slate-500 mt-2">Get instant, policy-grounded answers about company spending rules.</p>
+      </div>
+
+      <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">
+        <Card className="lg:col-span-3 border-slate-200/80 shadow-sm">
+          <CardContent className="p-0 flex flex-col h-[60vh] md:h-[600px]">
+            <ScrollArea className="flex-1 p-4 md:p-6" ref={scrollRef}>
+              <div className="space-y-4">
+                {messages.map((m, i) => (
+                  <div key={i} className={`flex gap-3 ${m.role === 'user' ? 'justify-end' : ''}`}>
+                    {m.role !== 'user' && <div className="w-8 h-8 rounded-xl bg-gradient-to-br from-purple-500 to-blue-600 flex items-center justify-center shrink-0"><Bot className="w-4 h-4 text-white"/></div>}
+                    <div className={`max-w-[80%] rounded-2xl px-4 py-2.5 text-sm ${m.role === 'user' ? 'bg-blue-600 text-white' : 'bg-slate-100 text-slate-900'}`}>
+                      <div className="whitespace-pre-wrap leading-relaxed">{m.content}</div>
+                    </div>
+                    {m.role === 'user' && <Avatar className="w-8 h-8"><AvatarFallback className="bg-gradient-to-br from-blue-500 to-blue-700 text-white text-[10px]">{(currentEmployee?.name||'').split(' ').map(s=>s[0]).join('').slice(0,2)}</AvatarFallback></Avatar>}
+                  </div>
+                ))}
+                {loading && (
+                  <div className="flex gap-3"><div className="w-8 h-8 rounded-xl bg-gradient-to-br from-purple-500 to-blue-600 flex items-center justify-center shrink-0"><Bot className="w-4 h-4 text-white"/></div>
+                    <div className="bg-slate-100 rounded-2xl px-4 py-3"><div className="flex gap-1"><span className="w-2 h-2 rounded-full bg-slate-400 animate-bounce"/><span className="w-2 h-2 rounded-full bg-slate-400 animate-bounce" style={{ animationDelay: '0.1s' }}/><span className="w-2 h-2 rounded-full bg-slate-400 animate-bounce" style={{ animationDelay: '0.2s' }}/></div></div>
+                  </div>
+                )}
+              </div>
+            </ScrollArea>
+            <div className="p-4 border-t border-slate-100">
+              <div className="flex gap-2">
+                <Input value={input} onChange={e => setInput(e.target.value)} onKeyDown={e => { if (e.key === 'Enter') send() }} placeholder="Ask about a spending policy…" className="h-11"/>
+                <Button onClick={send} disabled={loading || !input.trim()} className="h-11 bg-gradient-to-r from-purple-600 to-blue-600 gap-1.5"><Send className="w-4 h-4"/><span className="hidden md:inline">Send</span></Button>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+
+        <div className="space-y-4">
+          <Card className="border-slate-200/80 shadow-sm">
+            <CardHeader className="pb-3"><CardTitle className="text-sm">Try asking</CardTitle></CardHeader>
+            <CardContent className="space-y-2 pt-0">
+              {suggestions.map(s => <button key={s} onClick={() => setInput(s)} className="w-full text-left text-xs p-2.5 rounded-lg border border-slate-200 hover:border-purple-300 hover:bg-purple-50/30 transition-colors text-slate-700">{s}</button>)}
+            </CardContent>
+          </Card>
+          <Card className="border-slate-200/80 shadow-sm bg-gradient-to-br from-purple-50 to-blue-50 ring-1 ring-purple-100">
+            <CardContent className="p-4">
+              <div className="flex items-center gap-2 text-purple-700 text-xs font-bold mb-2"><Sparkles className="w-3.5 h-3.5"/>HOW IT WORKS</div>
+              <div className="text-xs text-slate-700 leading-relaxed">I read your active policy and budget context in real-time and answer using ONLY those rules — never guessing. If I don't know, I'll tell you whom to ask.</div>
+            </CardContent>
+          </Card>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// ───────────────────────────────── COST CENTERS ─────────────────────────────────
+function CostCenterView({ data }) {
+  const [rows, setRows] = useState([])
+  const [loading, setLoading] = useState(true)
+  const [selected, setSelected] = useState(null)
+  useEffect(() => { (async () => { const r = await fetch('/api/kpis/cost-centers').then(r=>r.json()); setRows(r); setLoading(false); if (r[0]) setSelected(r[0]) })() }, [])
+  const selectedTxns = useMemo(() => data.transactions.filter(t => t.costCenter === selected?.code), [data.transactions, selected])
+  return (
+    <div className="space-y-6">
+      <div><h1 className="text-2xl md:text-3xl font-bold text-slate-900 tracking-tight">Cost Center Drilldown</h1><p className="text-sm text-slate-500 mt-1">Spend visibility broken down by every cost center.</p></div>
+
+      <div className="grid grid-cols-1 lg:grid-cols-5 gap-6">
+        <Card className="lg:col-span-3 border-slate-200/80 shadow-sm">
+          <CardContent className="p-0">
+            <Table>
+              <TableHeader><TableRow><TableHead>Cost Center</TableHead><TableHead>Department</TableHead><TableHead className="text-right">Allocated</TableHead><TableHead className="text-right">Spent</TableHead><TableHead>Utilization</TableHead></TableRow></TableHeader>
+              <TableBody>
+                {loading && <TableRow><TableCell colSpan={5} className="text-center py-6 text-slate-500"><Loader2 className="w-4 h-4 animate-spin mx-auto"/></TableCell></TableRow>}
+                {rows.map(r => (
+                  <TableRow key={r.code} onClick={() => setSelected(r)} className={`cursor-pointer hover:bg-slate-50 ${selected?.code === r.code ? 'bg-blue-50/40' : ''}`}>
+                    <TableCell><div className="font-mono text-xs font-bold text-blue-700">{r.code}</div></TableCell>
+                    <TableCell className="text-sm">{r.department}</TableCell>
+                    <TableCell className="text-right font-semibold text-sm">{inr(r.allocated)}</TableCell>
+                    <TableCell className="text-right text-sm">{inr(r.spent)}</TableCell>
+                    <TableCell><div className="flex items-center gap-2"><Progress value={r.utilization} className={`h-1.5 w-20 ${r.utilization > 80 ? '[&>div]:bg-red-500' : ''}`}/><span className="text-xs font-semibold">{r.utilization}%</span></div></TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </CardContent>
+        </Card>
+
+        <Card className="lg:col-span-2 border-slate-200/80 shadow-sm">
+          <CardHeader className="pb-3"><CardTitle className="text-base">{selected ? selected.code : 'Select a cost center'}</CardTitle><CardDescription className="text-xs">{selected?.department}</CardDescription></CardHeader>
+          {selected && (
+            <CardContent>
+              <div className="grid grid-cols-2 gap-3">
+                <div className="p-3 rounded-lg bg-slate-50"><div className="text-[10px] uppercase text-slate-500 tracking-widest">Allocated</div><div className="text-lg font-bold mt-1">{inr(selected.allocated)}</div></div>
+                <div className="p-3 rounded-lg bg-emerald-50"><div className="text-[10px] uppercase text-emerald-700 tracking-widest">Remaining</div><div className="text-lg font-bold text-emerald-700 mt-1">{inr(selected.remaining)}</div></div>
+                <div className="p-3 rounded-lg bg-blue-50"><div className="text-[10px] uppercase text-blue-700 tracking-widest">Transactions</div><div className="text-lg font-bold text-blue-700 mt-1">{selected.txnCount}</div></div>
+                <div className="p-3 rounded-lg bg-amber-50"><div className="text-[10px] uppercase text-amber-700 tracking-widest">Pending</div><div className="text-lg font-bold text-amber-700 mt-1">{inr(selected.pending)}</div></div>
+              </div>
+              <Separator className="my-4"/>
+              <div className="text-[10px] uppercase tracking-widest text-slate-500 mb-2 font-semibold">Recent activity</div>
+              <div className="space-y-1.5 max-h-72 overflow-auto">
+                {selectedTxns.slice(0,8).map(t => <TxnRow key={t.id} txn={t} employees={data.employees} compact/>)}
+                {!selectedTxns.length && <div className="text-xs text-slate-500 py-4 text-center">No transactions</div>}
+              </div>
+            </CardContent>
+          )}
+        </Card>
+      </div>
+    </div>
+  )
+}
+
+// ───────────────────────────────── MONTHLY CLOSURE ─────────────────────────────────
+function MonthlyClosureView({ data }) {
+  const [month, setMonth] = useState(new Date().toISOString().slice(0,7))
+  const [c, setC] = useState(null)
+  const [loading, setLoading] = useState(false)
+  useEffect(() => { (async () => { setLoading(true); const r = await fetch(`/api/kpis/monthly-closure?month=${month}`).then(r=>r.json()); setC(r); setLoading(false) })() }, [month])
+  const COLORS = ['#2563EB','#16A34A','#F59E0B','#7C3AED','#DC2626','#0EA5E9']
+  return (
+    <div className="space-y-6">
+      <div className="flex flex-col md:flex-row md:items-center justify-between gap-3">
+        <div><h1 className="text-2xl md:text-3xl font-bold text-slate-900 tracking-tight">Monthly Closure</h1><p className="text-sm text-slate-500 mt-1">Period close report with full transaction trail.</p></div>
+        <div className="flex items-center gap-2">
+          <Input type="month" value={month} onChange={e => setMonth(e.target.value)} className="h-9 w-44"/>
+          {c?.closureStatus && <Badge className={`${c.closureStatus === 'Closed' ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-700'} hover:bg-current text-[10px]`}>{c.closureStatus}</Badge>}
+          <Button size="sm" variant="outline" className="gap-1.5" onClick={() => window.open('/api/transactions/export', '_blank')}><Download className="w-4 h-4"/>Export</Button>
+        </div>
+      </div>
+
+      {loading && <div className="py-20 text-center"><Loader2 className="w-6 h-6 animate-spin text-blue-600 mx-auto"/></div>}
+      {!loading && c && (
+        <>
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+            <KPI label={`${c.month} Spend`} value={inr(c.totalSpent)} icon={TrendingUp} accent="blue"/>
+            <KPI label="Transactions" value={c.txnCount} icon={Receipt} accent="slate"/>
+            <KPI label="Approved" value={c.approvedCount} icon={CheckCircle2} accent="green"/>
+            <KPI label="Violations" value={c.violations} icon={XCircle} accent="red"/>
+          </div>
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+            <Card className="border-slate-200/80 shadow-sm">
+              <CardHeader className="pb-2"><CardTitle className="text-base">By Department</CardTitle></CardHeader>
+              <CardContent>
+                <ResponsiveContainer width="100%" height={240}>
+                  <BarChart data={c.byDept}><CartesianGrid strokeDasharray="3 3" stroke="#E2E8F0" vertical={false}/><XAxis dataKey="name" tick={{ fontSize: 11, fill: '#64748B' }} axisLine={false} tickLine={false}/><YAxis tick={{ fontSize: 11, fill: '#64748B' }} axisLine={false} tickLine={false} tickFormatter={v => '₹'+v/1000+'k'}/><Tooltip formatter={(v) => inr(v)} contentStyle={{ borderRadius: 12, fontSize: 12 }}/><Bar dataKey="spent" radius={[8,8,0,0]} fill="#2563EB"/></BarChart>
+                </ResponsiveContainer>
+              </CardContent>
+            </Card>
+            <Card className="border-slate-200/80 shadow-sm">
+              <CardHeader className="pb-2"><CardTitle className="text-base">By Category</CardTitle></CardHeader>
+              <CardContent>
+                <ResponsiveContainer width="100%" height={240}>
+                  <PieChart><Pie data={c.byCategory} dataKey="value" nameKey="name" innerRadius={50} outerRadius={80}>{c.byCategory.map((_, i) => <Cell key={i} fill={COLORS[i % COLORS.length]}/>)}</Pie><Tooltip formatter={v => inr(v)} contentStyle={{ borderRadius: 12, fontSize: 12 }}/></PieChart>
+                </ResponsiveContainer>
+                <div className="space-y-1 mt-2">
+                  {c.byCategory.map((cc, i) => <div key={cc.name} className="flex items-center justify-between text-xs"><div className="flex items-center gap-2"><span className="w-2 h-2 rounded-full" style={{ background: COLORS[i % COLORS.length] }}/><span>{cc.name}</span></div><span className="font-semibold">{inr(cc.value)}</span></div>)}
+                </div>
+              </CardContent>
+            </Card>
+          </div>
+          <Card className="border-slate-200/80 shadow-sm">
+            <CardHeader className="pb-2"><CardTitle className="text-base">Top Merchants</CardTitle></CardHeader>
+            <CardContent>
+              {c.topMerchants.length ? c.topMerchants.map((m, i) => (
+                <div key={m.name} className="flex items-center gap-3 py-2 border-b last:border-0 border-slate-100">
+                  <div className="w-7 h-7 rounded-lg bg-blue-100 text-blue-700 flex items-center justify-center text-xs font-bold">#{i+1}</div>
+                  <div className="flex-1 font-medium text-sm">{m.name}</div>
+                  <div className="font-bold text-sm">{inr(m.amount)}</div>
+                </div>
+              )) : <div className="text-sm text-slate-500 py-6 text-center">No merchants this period</div>}
+            </CardContent>
+          </Card>
+        </>
+      )}
+    </div>
+  )
 }
 
 export default App

@@ -373,6 +373,162 @@ async function handle(req, ctx) {
       })
     }
 
+    // ---- LLM: Spend Forecast ----
+    if (path === 'llm/forecast' && method === 'POST') {
+      const body = await req.json().catch(() => ({}))
+      const kpis = body.kpis || null
+      const sys = `You are a senior CFO finance analyst. Given the spending KPI JSON, respond ONLY with valid JSON: { "headline": "1 punchy sentence", "forecast": "2 sentence forecast for next month based on burn rate", "risks": ["risk 1","risk 2","risk 3"], "actions": ["recommended action 1","action 2","action 3"] }. No prose outside JSON. Currency is INR. Be specific with numbers when possible.`
+      const userMsg = `KPIs JSON:\n${JSON.stringify(kpis, null, 2)}`
+      const r = await fetch('https://integrations.emergentagent.com/llm/chat/completions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${process.env.EMERGENT_LLM_KEY}` },
+        body: JSON.stringify({
+          model: 'gpt-4o-mini',
+          messages: [{ role: 'system', content: sys }, { role: 'user', content: userMsg }],
+          temperature: 0.3,
+          response_format: { type: 'json_object' }
+        })
+      })
+      if (!r.ok) return err('LLM error: ' + await r.text(), 500)
+      const data = await r.json()
+      let parsed = null
+      try { parsed = JSON.parse(data?.choices?.[0]?.message?.content || '{}') } catch { parsed = { headline: data?.choices?.[0]?.message?.content || 'No insight' } }
+      return ok({ insight: parsed, model: data?.model })
+    }
+
+    // ---- LLM: Policy Coach ----
+    if (path === 'llm/coach' && method === 'POST') {
+      const body = await req.json().catch(() => ({}))
+      const { question, history = [], context = null } = body
+      let policyContext = context
+      if (!policyContext) {
+        const policy = await db.collection('policies').findOne({ isDefault: true })
+        const budgets = await db.collection('budgets').find({}).toArray()
+        policyContext = {
+          policy: stripId(policy),
+          activeBudgets: budgets.map(b => ({ name: b.name, type: b.type, amount: b.amount, spent: b.spent, available: b.amount - b.spent }))
+        }
+      }
+      const sys = `You are CORPAY Policy Coach, an AI assistant for employees and finance managers at the company. You answer using ONLY the active company policy and budgets provided in context. If asked about something not in policy, say so clearly and suggest the right approver. Keep answers short (max 3 sentences), practical, and use INR (\u20B9). Quote exact limits where relevant.\n\nPOLICY & BUDGETS CONTEXT:\n${JSON.stringify(policyContext, null, 2)}`
+      const messages = [
+        { role: 'system', content: sys },
+        ...history.slice(-6).map(h => ({ role: h.role, content: h.content })),
+        { role: 'user', content: question }
+      ]
+      const r = await fetch('https://integrations.emergentagent.com/llm/chat/completions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${process.env.EMERGENT_LLM_KEY}` },
+        body: JSON.stringify({ model: 'gpt-4o-mini', messages, temperature: 0.4 })
+      })
+      if (!r.ok) return err('LLM error: ' + await r.text(), 500)
+      const data = await r.json()
+      const answer = data?.choices?.[0]?.message?.content || ''
+      return ok({ answer, model: data?.model })
+    }
+
+    // ---- Transactions CSV export ----
+    if (path === 'transactions/export' && method === 'GET') {
+      const [txns, employees, projects, departments] = await Promise.all([
+        db.collection('transactions').find({}).sort({ date: -1 }).toArray(),
+        db.collection('employees').find({}).toArray(),
+        db.collection('projects').find({}).toArray(),
+        db.collection('departments').find({}).toArray(),
+      ])
+      const empMap = Object.fromEntries(employees.map(e => [e.id, e]))
+      const projMap = Object.fromEntries(projects.map(p => [p.id, p]))
+      const deptMap = Object.fromEntries(departments.map(d => [d.id, d]))
+      const headers = ['TxnID','Date','Merchant','Category','Amount (INR)','Method','Status','Employee','Designation','Department','Cost Center','Project','Reason']
+      const escape = (v) => {
+        if (v === null || v === undefined) return ''
+        const s = String(v).replace(/"/g, '""')
+        return /[",\n]/.test(s) ? `"${s}"` : s
+      }
+      const lines = [headers.join(',')]
+      for (const t of txns) {
+        const emp = empMap[t.employeeId]
+        const proj = projMap[t.projectId]
+        const dept = deptMap[t.departmentId]
+        lines.push([
+          t.id, new Date(t.date).toISOString(), t.merchant, t.category, t.amount, t.method || 'UPI', t.status,
+          emp?.name || '', emp?.designation || '', dept?.name || '', t.costCenter || '', proj?.name || '', t.reason || ''
+        ].map(escape).join(','))
+      }
+      const csv = lines.join('\n')
+      return new NextResponse(csv, {
+        status: 200,
+        headers: {
+          'Content-Type': 'text/csv; charset=utf-8',
+          'Content-Disposition': `attachment; filename="corpay-transactions-${new Date().toISOString().slice(0,10)}.csv"`
+        }
+      })
+    }
+
+    // ---- Cost Center Drilldown ----
+    if (path === 'kpis/cost-centers' && method === 'GET') {
+      const [budgets, txns, departments] = await Promise.all([
+        db.collection('budgets').find({}).toArray(),
+        db.collection('transactions').find({}).toArray(),
+        db.collection('departments').find({}).toArray(),
+      ])
+      const ccs = {}
+      departments.forEach(d => { ccs[d.costCenter] = { code: d.costCenter, department: d.name, allocated: 0, spent: 0, pending: 0, txnCount: 0, violations: 0 } })
+      budgets.forEach(b => {
+        const cc = b.costCenter || 'UNASSIGNED'
+        if (!ccs[cc]) ccs[cc] = { code: cc, department: '-', allocated: 0, spent: 0, pending: 0, txnCount: 0, violations: 0 }
+        ccs[cc].allocated += b.amount
+      })
+      txns.forEach(t => {
+        const cc = t.costCenter || 'UNASSIGNED'
+        if (!ccs[cc]) ccs[cc] = { code: cc, department: '-', allocated: 0, spent: 0, pending: 0, txnCount: 0, violations: 0 }
+        ccs[cc].txnCount += 1
+        if (t.status === 'Approved') ccs[cc].spent += t.amount
+        if (t.status === 'Pending') ccs[cc].pending += t.amount
+        if (t.status === 'Rejected') ccs[cc].violations += 1
+      })
+      return ok(Object.values(ccs).map(c => ({ ...c, utilization: c.allocated ? Math.round((c.spent / c.allocated) * 100) : 0, remaining: c.allocated - c.spent })))
+    }
+
+    // ---- Monthly Closure ----
+    if (path === 'kpis/monthly-closure' && method === 'GET') {
+      const month = url.searchParams.get('month') // YYYY-MM
+      const ref = month ? new Date(month + '-01') : new Date()
+      const start = new Date(ref.getFullYear(), ref.getMonth(), 1)
+      const end = new Date(ref.getFullYear(), ref.getMonth() + 1, 1)
+      const [txns, departments, projects, budgets] = await Promise.all([
+        db.collection('transactions').find({ date: { $gte: start, $lt: end } }).toArray(),
+        db.collection('departments').find({}).toArray(),
+        db.collection('projects').find({}).toArray(),
+        db.collection('budgets').find({}).toArray(),
+      ])
+      const approved = txns.filter(t => t.status === 'Approved')
+      const totalSpent = approved.reduce((s,t)=>s+t.amount,0)
+      const totalAllocated = budgets.reduce((s,b)=>s+b.amount,0)
+      const byDept = departments.map(d => ({ name: d.name, spent: approved.filter(t => t.departmentId === d.id).reduce((s,t)=>s+t.amount,0) }))
+      const byProject = projects.map(p => ({ name: p.name, spent: approved.filter(t => t.projectId === p.id).reduce((s,t)=>s+t.amount,0) }))
+      const byCategory = {}
+      approved.forEach(t => { byCategory[t.category] = (byCategory[t.category]||0) + t.amount })
+      const violations = txns.filter(t => t.status === 'Rejected').length
+      const pending = txns.filter(t => t.status === 'Pending').length
+      return ok({
+        month: `${ref.toLocaleString('en-US', { month: 'long' })} ${ref.getFullYear()}`,
+        period: { start, end },
+        txnCount: txns.length, approvedCount: approved.length, pending, violations,
+        totalSpent, totalAllocated, byDept, byProject,
+        byCategory: Object.entries(byCategory).map(([name, value]) => ({ name, value })),
+        topMerchants: Object.entries(approved.reduce((acc,t)=>{acc[t.merchant]=(acc[t.merchant]||0)+t.amount;return acc},{})).sort((a,b)=>b[1]-a[1]).slice(0,5).map(([name,amount])=>({name,amount})),
+        closureStatus: end < new Date() ? 'Closed' : 'Open'
+      })
+    }
+
+    // ---- Login (demo) ----
+    if (path === 'login' && method === 'POST') {
+      const body = await req.json()
+      const { email } = body
+      const employee = await db.collection('employees').findOne({ email: email?.toLowerCase() })
+      if (!employee) return err('No such user. Try tej@eppsinfotech.com / anika@eppsinfotech.com / rohit@eppsinfotech.com', 404)
+      return ok({ user: stripId(employee), token: 'demo-jwt-' + employee.id })
+    }
+
     return err(`Unknown route: /${path}`, 404)
   } catch (e) {
     console.error('API error', e)

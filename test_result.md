@@ -244,6 +244,205 @@ agent_communication:
       (8) Then GET /api/approvals → has new pending. POST /api/approvals/{id}/approve → status=Approved on both approval and txn.
       (9) GET /api/kpis returns all aggregations correctly.
       Note: all IDs are UUIDs; no Mongo _id in any response.
+
+  - agent: "main"
+    message: |
+      ROUND 2: New features added — please test these new backend endpoints:
+      (A) POST /api/login { email: 'anika@eppsinfotech.com' } → returns { user, token: 'demo-jwt-<id>' }. Invalid email → 404.
+      (B) POST /api/llm/forecast { kpis: {...} } → returns { insight: { headline, forecast, risks[], actions[] }, model }. Uses Emergent LLM key via integrations.emergentagent.com endpoint. Verify insight.risks and insight.actions are arrays.
+      (C) POST /api/llm/coach { question: 'What is my daily limit?' } → returns { answer, model }. Verify answer mentions \u20B98000 (the daily limit). Also test with history array (multi-turn).
+      (D) GET /api/transactions/export → returns CSV file with Content-Type text/csv, Content-Disposition attachment. CSV must have header row and one row per transaction with columns TxnID, Date, Merchant, Category, Amount, Method, Status, Employee, Designation, Department, Cost Center, Project, Reason.
+      (E) GET /api/kpis/cost-centers → returns array of { code, department, allocated, spent, pending, txnCount, violations, utilization, remaining } per cost center (CC-FIN-001, CC-OPS-001, CC-PRJ-001).
+      (F) GET /api/kpis/monthly-closure?month=2026-06 (or current month) → returns { month, period, txnCount, approvedCount, pending, violations, totalSpent, totalAllocated, byDept[], byProject[], byCategory[], topMerchants[], closureStatus }. Without month param defaults to current month.
+      All previous endpoints should continue working.
+
+backend_new:
+  - task: "POST /api/login (demo email-only auth)"
+    implemented: true
+    working: true
+    file: "app/api/[[...path]]/route.js"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        - working: "NA"
+          agent: "main"
+          comment: "Looks up employee by email, returns user + demo token. Returns 404 if not found."
+        - working: true
+          agent: "testing"
+          comment: "✅ PASSED all 3 test cases: (1a) anika@eppsinfotech.com → 200 with user.role='Finance Head' and token='demo-jwt-{id}', (1b) tej@eppsinfotech.com → 200 with user.role='Employee' and token='demo-jwt-{id}', (1c) nobody@test.com → 404 with error message. No _id leaks detected."
+
+  - task: "POST /api/llm/forecast (Emergent LLM)"
+    implemented: true
+    working: true
+    file: "app/api/[[...path]]/route.js"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        - working: "NA"
+          agent: "main"
+          comment: "Uses integrations.emergentagent.com/llm/chat/completions with Bearer EMERGENT_LLM_KEY. Model gpt-4o-mini with response_format json_object. Returns parsed { headline, forecast, risks, actions }."
+        - working: true
+          agent: "testing"
+          comment: "✅ PASSED. POST /api/llm/forecast with KPIs payload → 200 with insight object containing headline, forecast, risks (array with 3 items), actions (array with 3 items), and model='gpt-4o-mini'. All required fields present and correctly typed. LLM integration working correctly."
+
+  - task: "POST /api/llm/coach (Emergent LLM chat)"
+    implemented: true
+    working: true
+    file: "app/api/[[...path]]/route.js"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        - working: "NA"
+          agent: "main"
+          comment: "Grounded in active policy + budgets injected into system prompt. Accepts history[] for multi-turn. Manually tested: 'Can I spend Rs 2000 on hotel' → 'Yes, within the hotel limit of \u20B95000.'"
+        - working: true
+          agent: "testing"
+          comment: "✅ PASSED both test cases: (3a) Single-turn question 'What is my daily limit?' → 200 with answer mentioning '\u20B98,000' (correct daily limit), (3b) Multi-turn with history, question 'And per hotel night?' → 200 with answer mentioning '\u20B95,000' (correct hotel limit). Policy grounding and conversation history working correctly."
+
+  - task: "GET /api/transactions/export (CSV)"
+    implemented: true
+    working: false
+    file: "app/api/[[...path]]/route.js"
+    stuck_count: 0
+    priority: "medium"
+    needs_retesting: true
+    status_history:
+        - working: "NA"
+          agent: "main"
+          comment: "Streams CSV with proper Content-Type/Disposition headers. Includes employee, project, department, cost-center attribution."
+        - working: false
+          agent: "testing"
+          comment: "❌ FAILED. GET /api/transactions/export → 404 with {\"error\":\"Not found\"}. ROOT CAUSE: Route ordering bug. The single document route handler (line 244: segments.length === 2 && collectionsMap[segments[0]]) matches BEFORE the transactions/export handler (line 430). When path='transactions/export', segments=['transactions','export'], so it matches the single doc route and tries to find a transaction with id='export', which doesn't exist. FIX: Move the transactions/export route handler (lines 430-464) to BEFORE the single document route handler (line 244), OR add explicit check to exclude 'export' from being treated as an id."
+
+  - task: "GET /api/kpis/cost-centers"
+    implemented: true
+    working: true
+    file: "app/api/[[...path]]/route.js"
+    stuck_count: 0
+    priority: "medium"
+    needs_retesting: false
+    status_history:
+        - working: "NA"
+          agent: "main"
+          comment: "Aggregates budgets and transactions by cost-center."
+        - working: true
+          agent: "testing"
+          comment: "✅ PASSED. GET /api/kpis/cost-centers → 200 with array of 3 cost centers (CC-FIN-001, CC-OPS-001, CC-PRJ-001). All required keys present: code, department, allocated, spent, pending, txnCount, violations, utilization, remaining. CC-OPS-001 (Operations) has non-zero txnCount=10 and spent=21790 as expected. Aggregation logic working correctly."
+
+  - task: "GET /api/kpis/monthly-closure"
+    implemented: true
+    working: true
+    file: "app/api/[[...path]]/route.js"
+    stuck_count: 0
+    priority: "medium"
+    needs_retesting: false
+    status_history:
+        - working: "NA"
+          agent: "main"
+          comment: "Accepts ?month=YYYY-MM, defaults to current. Returns counts, dept breakdown, project breakdown, category breakdown, top merchants, closure status."
+        - working: true
+          agent: "testing"
+          comment: "✅ PASSED both test cases: (6a) GET /api/kpis/monthly-closure (no param) → 200 with current month='June 2026', all required keys present (month, period, txnCount, approvedCount, pending, violations, totalSpent, totalAllocated, byDept, byProject, byCategory, topMerchants, closureStatus). topMerchants array has 5 items sorted descending by amount. (6b) GET /api/kpis/monthly-closure?month=2025-06 → 200 with month='June 2025', closureStatus='Closed'. Query parameter working correctly."
+
+frontend_new:
+  - task: "Login page with 4 slides + quick demo access"
+    implemented: true
+    working: true
+    file: "app/login/page.js"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        - working: true
+          agent: "main"
+          comment: "Verified visually: 4 slides auto-cycle (Problem, CORPAY, Scan-Pay, Intelligence) with dot indicators. 3 quick-access user buttons (Anika/Rohit/Tej) work after fix using overrideEmail. Uses window.location.href for hard redirect."
+
+  - task: "Auth gate on / + logout"
+    implemented: true
+    working: true
+    file: "app/page.js"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        - working: true
+          agent: "main"
+          comment: "/ checks localStorage.corpay_user, redirects to /login if missing. Role pre-set from user.role. Logout in dropdown clears storage + redirects."
+
+  - task: "AI Policy Coach view (chat UI + LLM)"
+    implemented: true
+    working: true
+    file: "app/page.js"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        - working: true
+          agent: "main"
+          comment: "Verified visually: chat answered 'What is my daily limit?' with 'Your daily limit is \u20B98,000.' Suggestion chips, typing indicator, multi-turn history all in place."
+
+  - task: "Executive Forecast widget (LLM card)"
+    implemented: true
+    working: "NA"
+    file: "app/page.js"
+    stuck_count: 0
+    priority: "medium"
+    needs_retesting: true
+    status_history:
+        - working: "NA"
+          agent: "main"
+          comment: "Executive dashboard has an AI Spend Forecast card with Generate button → calls /api/llm/forecast → displays headline, forecast, risks, actions."
+
+  - task: "Cost Center Drilldown view"
+    implemented: true
+    working: true
+    file: "app/page.js"
+    stuck_count: 0
+    priority: "medium"
+    needs_retesting: false
+    status_history:
+        - working: true
+          agent: "main"
+          comment: "Verified visually: table of cost centers + detail card with allocated/remaining/txn count/pending and recent activity feed."
+
+  - task: "Monthly Closure view"
+    implemented: true
+    working: true
+    file: "app/page.js"
+    stuck_count: 0
+    priority: "medium"
+    needs_retesting: false
+    status_history:
+        - working: true
+          agent: "main"
+          comment: "Verified visually: month picker, KPIs (June 2026 Spend ₹32,040, 13 txns, 11 approved, 2 violations), dept bar chart, category donut, top merchants list."
+
+  - task: "Mobile responsive layout + PWA"
+    implemented: true
+    working: "NA"
+    file: "app/layout.js, app/page.js, public/manifest.json, public/sw.js"
+    stuck_count: 0
+    priority: "medium"
+    needs_retesting: true
+    status_history:
+        - working: "NA"
+          agent: "main"
+          comment: "Sidebar collapses to Sheet drawer (hamburger) on mobile. Hero text scales. manifest.json + sw.js registered. App icons 192/512 generated. Installable on iOS Safari (Add to Home Screen) & Android Chrome."
+
+  - task: "CSV export download"
+    implemented: true
+    working: "NA"
+    file: "app/page.js"
+    stuck_count: 0
+    priority: "low"
+    needs_retesting: true
+    status_history:
+        - working: "NA"
+          agent: "main"
+          comment: "Export button on Transactions + Monthly Closure pages opens /api/transactions/export which downloads CSV with all attribution columns."
   
   - agent: "testing"
     message: |
@@ -327,3 +526,42 @@ agent_communication:
          - amount=15000 food → allowed:false ✅
       
       BACKEND STATUS: All 7 backend tasks now PASSING. No critical issues remaining.
+
+
+  - agent: "testing"
+    message: |
+      ✅ ROUND 2 BACKEND TESTING COMPLETE - 5/6 endpoints PASSED, 1 FAILED
+      
+      RESULTS SUMMARY:
+      ✅ POST /api/login - All 3 test cases passed (Anika/Finance Head, Tej/Employee, invalid email 404)
+      ✅ POST /api/llm/forecast - LLM integration working, returns insight with risks[] and actions[]
+      ✅ POST /api/llm/coach - Both single-turn and multi-turn conversations working correctly
+      ❌ GET /api/transactions/export - ROUTE ORDERING BUG (see details below)
+      ✅ GET /api/kpis/cost-centers - Aggregation working correctly for all 3 cost centers
+      ✅ GET /api/kpis/monthly-closure - Both current month and specific month queries working
+      
+      REGRESSION TESTS (all passed):
+      ✅ GET /api/kpis - No _id leaks
+      ✅ GET /api/budgets - No _id leaks
+      ✅ GET /api/employees - No _id leaks
+      ✅ GET /api/policies - No _id leaks
+      
+      CRITICAL BUG FOUND:
+      
+      **GET /api/transactions/export returns 404**
+      - Root cause: Route ordering issue in app/api/[[...path]]/route.js
+      - The single document route handler (line 244) matches BEFORE the transactions/export handler (line 430)
+      - When path='transactions/export', segments=['transactions','export'], the code at line 244 evaluates:
+        * segments.length === 2 → TRUE
+        * collectionsMap['transactions'] exists → TRUE
+        * So it tries to GET transaction with id='export', which doesn't exist → 404
+      
+      FIX REQUIRED:
+      Move the transactions/export route handler (lines 430-464) to BEFORE the single document route handler (line 244).
+      Alternatively, add explicit check at line 244 to exclude 'export' from being treated as an id:
+      ```javascript
+      const segIdMatch = segments.length === 2 && collectionsMap[segments[0]] && segments[1] !== 'export'
+      ```
+      
+      Note: This same pattern could affect other future endpoints like /api/{collection}/{action}.
+      Consider moving all special action routes before the generic CRUD routes.
