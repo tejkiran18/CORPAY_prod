@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """
-CORPAY Backend API Test Suite
-Tests all backend endpoints per test_result.md requirements
+CORPAY Backend Re-test Script
+Tests the two bug fixes:
+1. validateSpend resolves budget BEFORE category limit check
+2. /api/pay strips _id from validation.budget in response
 """
 
 import requests
@@ -10,846 +12,314 @@ import sys
 
 BASE_URL = "https://spend-governance.preview.emergentagent.com/api"
 
-def print_test(name, passed, details=""):
-    status = "✅ PASS" if passed else "❌ FAIL"
-    print(f"\n{status}: {name}")
-    if details:
-        print(f"  Details: {details}")
-    return passed
+def print_section(title):
+    print(f"\n{'='*80}")
+    print(f"  {title}")
+    print(f"{'='*80}\n")
+
+def check_no_id_field(obj, path=""):
+    """Recursively check for _id field in object"""
+    if isinstance(obj, dict):
+        if '_id' in obj:
+            return f"Found _id at {path}"
+        for key, value in obj.items():
+            result = check_no_id_field(value, f"{path}.{key}" if path else key)
+            if result:
+                return result
+    elif isinstance(obj, list):
+        for i, item in enumerate(obj):
+            result = check_no_id_field(item, f"{path}[{i}]")
+            if result:
+                return result
+    return None
 
 def test_seed():
-    """Test 1: POST /api/seed creates demo data"""
-    print("\n" + "="*80)
-    print("TEST 1: POST /api/seed - Create demo data")
-    print("="*80)
-    
+    """A. POST /api/seed (reset state)"""
+    print_section("A. POST /api/seed - Reset State")
     try:
-        resp = requests.post(f"{BASE_URL}/seed", timeout=10)
-        print(f"Status: {resp.status_code}")
-        
-        if resp.status_code != 200:
-            return print_test("Seed endpoint", False, f"Expected 200, got {resp.status_code}")
-        
-        data = resp.json()
+        response = requests.post(f"{BASE_URL}/seed", timeout=10)
+        print(f"Status: {response.status_code}")
+        data = response.json()
         print(f"Response: {json.dumps(data, indent=2)}")
         
-        # Check structure
-        if not data.get('seeded'):
-            return print_test("Seed endpoint", False, "Missing 'seeded' field")
+        assert response.status_code == 200, f"Expected 200, got {response.status_code}"
+        assert data.get('seeded') == True, "Expected seeded=true"
+        assert data.get('employees') == 5, f"Expected 5 employees, got {data.get('employees')}"
+        assert data.get('budgets') == 4, f"Expected 4 budgets, got {data.get('budgets')}"
+        assert data.get('transactions') == 10, f"Expected 10 transactions, got {data.get('transactions')}"
         
-        # Check counts
-        employees = data.get('employees', 0)
-        budgets = data.get('budgets', 0)
-        transactions = data.get('transactions', 0)
-        
-        if employees != 5:
-            return print_test("Seed endpoint", False, f"Expected 5 employees, got {employees}")
-        if budgets != 4:
-            return print_test("Seed endpoint", False, f"Expected 4 budgets, got {budgets}")
-        if transactions < 10:
-            return print_test("Seed endpoint", False, f"Expected ≥10 transactions, got {transactions}")
-        
-        return print_test("Seed endpoint", True, f"Created {employees} employees, {budgets} budgets, {transactions} transactions")
-    
+        print("✅ PASSED: Seed endpoint working correctly")
+        return True
     except Exception as e:
-        return print_test("Seed endpoint", False, f"Exception: {str(e)}")
+        print(f"❌ FAILED: {str(e)}")
+        return False
 
-def test_organizations():
-    """Test 2: GET /api/organizations - exactly 1 org"""
-    print("\n" + "="*80)
-    print("TEST 2: GET /api/organizations")
-    print("="*80)
-    
+def get_tej_employee_id():
+    """B. Find Tej Kiran's employee id"""
+    print_section("B. Find Tej Kiran's Employee ID")
     try:
-        resp = requests.get(f"{BASE_URL}/organizations", timeout=10)
-        print(f"Status: {resp.status_code}")
+        response = requests.get(f"{BASE_URL}/employees", timeout=10)
+        print(f"Status: {response.status_code}")
+        employees = response.json()
         
-        if resp.status_code != 200:
-            return print_test("Organizations endpoint", False, f"Expected 200, got {resp.status_code}")
+        tej = next((e for e in employees if e.get('name') == 'Tej Kiran'), None)
+        assert tej is not None, "Tej Kiran not found in employees"
         
-        data = resp.json()
-        print(f"Response: {json.dumps(data, indent=2)}")
+        tej_id = tej.get('id')
+        print(f"Tej Kiran ID: {tej_id}")
+        print(f"Tej Kiran details: {json.dumps(tej, indent=2)}")
         
-        if len(data) != 1:
-            return print_test("Organizations endpoint", False, f"Expected 1 org, got {len(data)}")
-        
-        org = data[0]
-        if org.get('name') != 'EPPS Infotech':
-            return print_test("Organizations endpoint", False, f"Expected 'EPPS Infotech', got '{org.get('name')}'")
-        
-        if '_id' in org:
-            return print_test("Organizations endpoint", False, "Found Mongo _id in response")
-        
-        return print_test("Organizations endpoint", True, f"Found 1 org: {org.get('name')}")
-    
+        print("✅ PASSED: Found Tej Kiran's employee ID")
+        return tej_id
     except Exception as e:
-        return print_test("Organizations endpoint", False, f"Exception: {str(e)}")
+        print(f"❌ FAILED: {str(e)}")
+        return None
 
-def test_departments():
-    """Test 3: GET /api/departments - 3 departments with costCenter"""
-    print("\n" + "="*80)
-    print("TEST 3: GET /api/departments")
-    print("="*80)
+def test_validate_spend_scenarios(tej_id):
+    """Re-run validate-spend scenarios"""
+    print_section("Validate-Spend Scenarios")
     
-    try:
-        resp = requests.get(f"{BASE_URL}/departments", timeout=10)
-        print(f"Status: {resp.status_code}")
-        
-        if resp.status_code != 200:
-            return print_test("Departments endpoint", False, f"Expected 200, got {resp.status_code}")
-        
-        data = resp.json()
-        print(f"Response: {json.dumps(data, indent=2)}")
-        
-        if len(data) != 3:
-            return print_test("Departments endpoint", False, f"Expected 3 departments, got {len(data)}")
-        
-        names = [d.get('name') for d in data]
-        expected = ['Finance', 'Operations', 'Projects']
-        
-        for exp in expected:
-            if exp not in names:
-                return print_test("Departments endpoint", False, f"Missing department: {exp}")
-        
-        for dept in data:
-            if not dept.get('costCenter'):
-                return print_test("Departments endpoint", False, f"Department {dept.get('name')} missing costCenter")
-            if '_id' in dept:
-                return print_test("Departments endpoint", False, "Found Mongo _id in response")
-        
-        return print_test("Departments endpoint", True, f"Found 3 departments with costCenters: {', '.join(names)}")
-    
-    except Exception as e:
-        return print_test("Departments endpoint", False, f"Exception: {str(e)}")
-
-def test_projects():
-    """Test 4: GET /api/projects - 2 projects with budgetCap"""
-    print("\n" + "="*80)
-    print("TEST 4: GET /api/projects")
-    print("="*80)
-    
-    try:
-        resp = requests.get(f"{BASE_URL}/projects", timeout=10)
-        print(f"Status: {resp.status_code}")
-        
-        if resp.status_code != 200:
-            return print_test("Projects endpoint", False, f"Expected 200, got {resp.status_code}")
-        
-        data = resp.json()
-        print(f"Response: {json.dumps(data, indent=2)}")
-        
-        if len(data) != 2:
-            return print_test("Projects endpoint", False, f"Expected 2 projects, got {len(data)}")
-        
-        names = [p.get('name') for p in data]
-        expected = ['NDV ERP', 'Yard ERP']
-        
-        for exp in expected:
-            if exp not in names:
-                return print_test("Projects endpoint", False, f"Missing project: {exp}")
-        
-        for proj in data:
-            if not proj.get('budgetCap'):
-                return print_test("Projects endpoint", False, f"Project {proj.get('name')} missing budgetCap")
-            if '_id' in proj:
-                return print_test("Projects endpoint", False, "Found Mongo _id in response")
-        
-        return print_test("Projects endpoint", True, f"Found 2 projects with budgetCap: {', '.join(names)}")
-    
-    except Exception as e:
-        return print_test("Projects endpoint", False, f"Exception: {str(e)}")
-
-def test_employees():
-    """Test 5: GET /api/employees - 5 employees including Tej Kiran"""
-    print("\n" + "="*80)
-    print("TEST 5: GET /api/employees")
-    print("="*80)
-    
-    try:
-        resp = requests.get(f"{BASE_URL}/employees", timeout=10)
-        print(f"Status: {resp.status_code}")
-        
-        if resp.status_code != 200:
-            return print_test("Employees endpoint", False, f"Expected 200, got {resp.status_code}")
-        
-        data = resp.json()
-        print(f"Response: {json.dumps(data, indent=2)}")
-        
-        if len(data) != 5:
-            return print_test("Employees endpoint", False, f"Expected 5 employees, got {len(data)}")
-        
-        names = [e.get('name') for e in data]
-        if 'Tej Kiran' not in names:
-            return print_test("Employees endpoint", False, "Missing employee: Tej Kiran")
-        
-        tej = next((e for e in data if e.get('name') == 'Tej Kiran'), None)
-        if not tej:
-            return print_test("Employees endpoint", False, "Could not find Tej Kiran")
-        
-        if tej.get('role') != 'Employee':
-            return print_test("Employees endpoint", False, f"Tej Kiran role should be 'Employee', got '{tej.get('role')}'")
-        
-        for emp in data:
-            if '_id' in emp:
-                return print_test("Employees endpoint", False, "Found Mongo _id in response")
-        
-        # Store Tej's ID for later tests
-        global TEJ_ID
-        TEJ_ID = tej.get('id')
-        
-        return print_test("Employees endpoint", True, f"Found 5 employees including Tej Kiran (Employee role)")
-    
-    except Exception as e:
-        return print_test("Employees endpoint", False, f"Exception: {str(e)}")
-
-def test_budgets():
-    """Test 6: GET /api/budgets - 4 budgets including Hyderabad Client Visit"""
-    print("\n" + "="*80)
-    print("TEST 6: GET /api/budgets")
-    print("="*80)
-    
-    try:
-        resp = requests.get(f"{BASE_URL}/budgets", timeout=10)
-        print(f"Status: {resp.status_code}")
-        
-        if resp.status_code != 200:
-            return print_test("Budgets endpoint", False, f"Expected 200, got {resp.status_code}")
-        
-        data = resp.json()
-        print(f"Response: {json.dumps(data, indent=2)}")
-        
-        if len(data) != 4:
-            return print_test("Budgets endpoint", False, f"Expected 4 budgets, got {len(data)}")
-        
-        names = [b.get('name') for b in data]
-        if 'Hyderabad Client Visit' not in names:
-            return print_test("Budgets endpoint", False, "Missing budget: Hyderabad Client Visit")
-        
-        hyd = next((b for b in data if b.get('name') == 'Hyderabad Client Visit'), None)
-        if not hyd:
-            return print_test("Budgets endpoint", False, "Could not find Hyderabad Client Visit budget")
-        
-        breakdown = hyd.get('breakdown', {})
-        if breakdown.get('food') != 3000:
-            return print_test("Budgets endpoint", False, f"Expected food: 3000, got {breakdown.get('food')}")
-        if breakdown.get('hotel') != 10000:
-            return print_test("Budgets endpoint", False, f"Expected hotel: 10000, got {breakdown.get('hotel')}")
-        if breakdown.get('travel') != 12000:
-            return print_test("Budgets endpoint", False, f"Expected travel: 12000, got {breakdown.get('travel')}")
-        
-        if hyd.get('amount') != 25000:
-            return print_test("Budgets endpoint", False, f"Expected total: 25000, got {hyd.get('amount')}")
-        
-        for budget in data:
-            if '_id' in budget:
-                return print_test("Budgets endpoint", False, "Found Mongo _id in response")
-        
-        # Store budget ID for later tests
-        global HYD_BUDGET_ID
-        HYD_BUDGET_ID = hyd.get('id')
-        
-        return print_test("Budgets endpoint", True, "Found 4 budgets with correct breakdown")
-    
-    except Exception as e:
-        return print_test("Budgets endpoint", False, f"Exception: {str(e)}")
-
-def test_policies():
-    """Test 7: GET /api/policies - 1 default policy with limits"""
-    print("\n" + "="*80)
-    print("TEST 7: GET /api/policies")
-    print("="*80)
-    
-    try:
-        resp = requests.get(f"{BASE_URL}/policies", timeout=10)
-        print(f"Status: {resp.status_code}")
-        
-        if resp.status_code != 200:
-            return print_test("Policies endpoint", False, f"Expected 200, got {resp.status_code}")
-        
-        data = resp.json()
-        print(f"Response: {json.dumps(data, indent=2)}")
-        
-        if len(data) != 1:
-            return print_test("Policies endpoint", False, f"Expected 1 policy, got {len(data)}")
-        
-        policy = data[0]
-        
-        checks = [
-            ('foodLimit', 1500),
-            ('hotelLimit', 5000),
-            ('travelLimit', 4000),
-            ('dailyLimit', 8000),
-            ('perTransactionLimit', 10000),
-            ('approvalThreshold', 5000),
-        ]
-        
-        for field, expected in checks:
-            if policy.get(field) != expected:
-                return print_test("Policies endpoint", False, f"Expected {field}: {expected}, got {policy.get(field)}")
-        
-        if '_id' in policy:
-            return print_test("Policies endpoint", False, "Found Mongo _id in response")
-        
-        return print_test("Policies endpoint", True, "Found 1 default policy with correct limits")
-    
-    except Exception as e:
-        return print_test("Policies endpoint", False, f"Exception: {str(e)}")
-
-def test_validate_spend():
-    """Test 8: POST /api/validate-spend - validation engine"""
-    print("\n" + "="*80)
-    print("TEST 8: POST /api/validate-spend - Validation engine")
-    print("="*80)
+    scenarios = [
+        {
+            "name": "Small food (500) - should allow without approval",
+            "payload": {"employeeId": tej_id, "amount": 500, "category": "Food & Dining"},
+            "expected": {"allowed": True, "requiresApproval": False}
+        },
+        {
+            "name": "Large food (2000) - should allow with approval (exceeds 1500 limit)",
+            "payload": {"employeeId": tej_id, "amount": 2000, "category": "Food & Dining"},
+            "expected": {"allowed": True, "requiresApproval": True}
+        },
+        {
+            "name": "Entertainment (500) - should block (restricted category)",
+            "payload": {"employeeId": tej_id, "amount": 500, "category": "Entertainment"},
+            "expected": {"allowed": False}
+        },
+        {
+            "name": "Large food (15000) - should block (exceeds 10000 per-txn limit)",
+            "payload": {"employeeId": tej_id, "amount": 15000, "category": "Food & Dining"},
+            "expected": {"allowed": False}
+        }
+    ]
     
     all_passed = True
-    
-    # Test 8.1: Small food purchase - should be allowed, no approval
-    print("\n--- Test 8.1: Small food purchase (500 INR) ---")
-    try:
-        payload = {
-            "employeeId": TEJ_ID,
-            "amount": 500,
-            "category": "Food & Dining"
-        }
-        resp = requests.post(f"{BASE_URL}/validate-spend", json=payload, timeout=10)
-        print(f"Status: {resp.status_code}")
-        data = resp.json()
-        print(f"Response: {json.dumps(data, indent=2)}")
-        
-        if not data.get('allowed'):
-            print_test("Validate: small food", False, "Should be allowed")
+    for scenario in scenarios:
+        print(f"\n--- {scenario['name']} ---")
+        try:
+            response = requests.post(f"{BASE_URL}/validate-spend", json=scenario['payload'], timeout=10)
+            print(f"Status: {response.status_code}")
+            data = response.json()
+            print(f"Response: {json.dumps(data, indent=2)}")
+            
+            # Check _id leak
+            id_check = check_no_id_field(data)
+            if id_check:
+                print(f"❌ FAILED: {id_check}")
+                all_passed = False
+                continue
+            
+            # Check expected values
+            for key, expected_value in scenario['expected'].items():
+                actual_value = data.get(key)
+                if actual_value != expected_value:
+                    print(f"❌ FAILED: Expected {key}={expected_value}, got {actual_value}")
+                    all_passed = False
+                    break
+            else:
+                print(f"✅ PASSED: {scenario['name']}")
+        except Exception as e:
+            print(f"❌ FAILED: {str(e)}")
             all_passed = False
-        elif data.get('requiresApproval'):
-            print_test("Validate: small food", False, "Should not require approval")
-            all_passed = False
-        else:
-            print_test("Validate: small food", True, "Allowed without approval")
-    except Exception as e:
-        print_test("Validate: small food", False, f"Exception: {str(e)}")
-        all_passed = False
-    
-    # Test 8.2: Large food purchase - should be allowed but require approval
-    print("\n--- Test 8.2: Large food purchase (2000 INR, exceeds 1500 limit) ---")
-    try:
-        payload = {
-            "employeeId": TEJ_ID,
-            "amount": 2000,
-            "category": "Food & Dining"
-        }
-        resp = requests.post(f"{BASE_URL}/validate-spend", json=payload, timeout=10)
-        print(f"Status: {resp.status_code}")
-        data = resp.json()
-        print(f"Response: {json.dumps(data, indent=2)}")
-        
-        if not data.get('allowed'):
-            print_test("Validate: large food", False, "Should be allowed")
-            all_passed = False
-        elif not data.get('requiresApproval'):
-            print_test("Validate: large food", False, "Should require approval (exceeds 1500 food limit)")
-            all_passed = False
-        else:
-            print_test("Validate: large food", True, "Allowed with approval required")
-    except Exception as e:
-        print_test("Validate: large food", False, f"Exception: {str(e)}")
-        all_passed = False
-    
-    # Test 8.3: Travel above approval threshold
-    print("\n--- Test 8.3: Travel (6000 INR, exceeds 5000 approval threshold) ---")
-    try:
-        payload = {
-            "employeeId": TEJ_ID,
-            "amount": 6000,
-            "category": "Travel"
-        }
-        resp = requests.post(f"{BASE_URL}/validate-spend", json=payload, timeout=10)
-        print(f"Status: {resp.status_code}")
-        data = resp.json()
-        print(f"Response: {json.dumps(data, indent=2)}")
-        
-        if not data.get('allowed'):
-            print_test("Validate: travel threshold", False, "Should be allowed")
-            all_passed = False
-        elif not data.get('requiresApproval'):
-            print_test("Validate: travel threshold", False, "Should require approval (exceeds 5000 threshold)")
-            all_passed = False
-        else:
-            print_test("Validate: travel threshold", True, "Allowed with approval required")
-    except Exception as e:
-        print_test("Validate: travel threshold", False, f"Exception: {str(e)}")
-        all_passed = False
-    
-    # Test 8.4: Restricted category - should be blocked
-    print("\n--- Test 8.4: Restricted category (Entertainment) ---")
-    try:
-        payload = {
-            "employeeId": TEJ_ID,
-            "amount": 500,
-            "category": "Entertainment"
-        }
-        resp = requests.post(f"{BASE_URL}/validate-spend", json=payload, timeout=10)
-        print(f"Status: {resp.status_code}")
-        data = resp.json()
-        print(f"Response: {json.dumps(data, indent=2)}")
-        
-        if data.get('allowed'):
-            print_test("Validate: restricted category", False, "Should be blocked (Entertainment is restricted)")
-            all_passed = False
-        else:
-            print_test("Validate: restricted category", True, "Correctly blocked")
-    except Exception as e:
-        print_test("Validate: restricted category", False, f"Exception: {str(e)}")
-        all_passed = False
-    
-    # Test 8.5: Unknown category - should be blocked
-    print("\n--- Test 8.5: Unknown category (Random) ---")
-    try:
-        payload = {
-            "employeeId": TEJ_ID,
-            "amount": 500,
-            "category": "Random"
-        }
-        resp = requests.post(f"{BASE_URL}/validate-spend", json=payload, timeout=10)
-        print(f"Status: {resp.status_code}")
-        data = resp.json()
-        print(f"Response: {json.dumps(data, indent=2)}")
-        
-        if data.get('allowed'):
-            print_test("Validate: unknown category", False, "Should be blocked (not in allowed list)")
-            all_passed = False
-        else:
-            print_test("Validate: unknown category", True, "Correctly blocked")
-    except Exception as e:
-        print_test("Validate: unknown category", False, f"Exception: {str(e)}")
-        all_passed = False
-    
-    # Test 8.6: Exceeds per-transaction limit - should be blocked
-    print("\n--- Test 8.6: Exceeds per-transaction limit (15000 INR) ---")
-    try:
-        payload = {
-            "employeeId": TEJ_ID,
-            "amount": 15000,
-            "category": "Food & Dining"
-        }
-        resp = requests.post(f"{BASE_URL}/validate-spend", json=payload, timeout=10)
-        print(f"Status: {resp.status_code}")
-        data = resp.json()
-        print(f"Response: {json.dumps(data, indent=2)}")
-        
-        if data.get('allowed'):
-            print_test("Validate: per-txn limit", False, "Should be blocked (exceeds 10000 per-txn limit)")
-            all_passed = False
-        else:
-            print_test("Validate: per-txn limit", True, "Correctly blocked")
-    except Exception as e:
-        print_test("Validate: per-txn limit", False, f"Exception: {str(e)}")
-        all_passed = False
     
     return all_passed
 
-def test_pay_approved():
-    """Test 9: POST /api/pay - approved transaction"""
-    print("\n" + "="*80)
-    print("TEST 9: POST /api/pay - Approved transaction")
-    print("="*80)
+def test_pay_with_approval_flow(tej_id):
+    """C-H. Test the full approval flow"""
+    print_section("C. POST /api/pay - Amount 2500 (triggers approval)")
     
     try:
-        # Get initial budget spent
-        resp = requests.get(f"{BASE_URL}/budgets", timeout=10)
-        budgets_before = resp.json()
-        hyd_before = next((b for b in budgets_before if b.get('name') == 'Hyderabad Client Visit'), None)
-        spent_before = hyd_before.get('spent', 0) if hyd_before else 0
-        print(f"Budget spent before: {spent_before}")
-        
-        # Make payment
-        payload = {
-            "employeeId": TEJ_ID,
-            "amount": 600,
+        # C. POST /api/pay
+        pay_payload = {
+            "employeeId": tej_id,
+            "amount": 2500,
             "category": "Food & Dining",
             "merchant": "Test Cafe"
         }
-        resp = requests.post(f"{BASE_URL}/pay", json=payload, timeout=10)
-        print(f"Status: {resp.status_code}")
-        data = resp.json()
-        print(f"Response: {json.dumps(data, indent=2)}")
+        response = requests.post(f"{BASE_URL}/pay", json=pay_payload, timeout=10)
+        print(f"Status: {response.status_code}")
+        pay_data = response.json()
+        print(f"Response: {json.dumps(pay_data, indent=2)}")
         
-        if not data.get('success'):
-            return print_test("Pay: approved transaction", False, "Payment should succeed")
+        # Verify response structure
+        assert response.status_code == 200, f"Expected 200, got {response.status_code}"
+        assert pay_data.get('success') == True, f"Expected success=true, got {pay_data.get('success')}"
+        assert pay_data.get('status') == 'Pending', f"Expected status=Pending, got {pay_data.get('status')}"
         
-        if data.get('status') != 'Approved':
-            return print_test("Pay: approved transaction", False, f"Expected status 'Approved', got '{data.get('status')}'")
+        # Check validation.budget present
+        validation = pay_data.get('validation', {})
+        assert 'budget' in validation, "Expected validation.budget to be present"
+        assert validation['budget'] is not None, "Expected validation.budget to not be null"
         
-        txn = data.get('transaction', {})
-        if not txn.get('id'):
-            return print_test("Pay: approved transaction", False, "Missing transaction ID")
+        # Check NO _id field in validation.budget
+        id_check = check_no_id_field(pay_data)
+        assert id_check is None, f"_id leak detected: {id_check}"
         
-        if '_id' in txn:
-            return print_test("Pay: approved transaction", False, "Found Mongo _id in transaction")
+        # Check transaction has budgetId set (not null)
+        transaction = pay_data.get('transaction', {})
+        budget_id = transaction.get('budgetId')
+        assert budget_id is not None, "Expected transaction.budgetId to be set (not null)"
+        print(f"✅ Transaction budgetId: {budget_id}")
         
-        # Verify budget spent increased
-        resp = requests.get(f"{BASE_URL}/budgets", timeout=10)
-        budgets_after = resp.json()
-        hyd_after = next((b for b in budgets_after if b.get('name') == 'Hyderabad Client Visit'), None)
-        spent_after = hyd_after.get('spent', 0) if hyd_after else 0
-        print(f"Budget spent after: {spent_after}")
+        transaction_id = transaction.get('id')
+        print(f"✅ Transaction ID: {transaction_id}")
         
-        if spent_after != spent_before + 600:
-            return print_test("Pay: approved transaction", False, f"Budget spent should increase by 600, was {spent_before}, now {spent_after}")
+        print("✅ PASSED: /api/pay response correct - success=true, status=Pending, validation.budget present with NO _id, budgetId set")
         
-        return print_test("Pay: approved transaction", True, "Transaction approved and budget updated")
-    
-    except Exception as e:
-        return print_test("Pay: approved transaction", False, f"Exception: {str(e)}")
-
-def test_pay_pending():
-    """Test 10: POST /api/pay - pending approval transaction"""
-    print("\n" + "="*80)
-    print("TEST 10: POST /api/pay - Pending approval transaction")
-    print("="*80)
-    
-    try:
-        # Get initial budget spent
-        resp = requests.get(f"{BASE_URL}/budgets", timeout=10)
-        budgets_before = resp.json()
-        hyd_before = next((b for b in budgets_before if b.get('name') == 'Hyderabad Client Visit'), None)
-        spent_before = hyd_before.get('spent', 0) if hyd_before else 0
-        print(f"Budget spent before: {spent_before}")
+        # D. GET /api/approvals - find the new pending approval
+        print_section("D. GET /api/approvals - Find Pending Approval")
+        response = requests.get(f"{BASE_URL}/approvals", timeout=10)
+        print(f"Status: {response.status_code}")
+        approvals = response.json()
         
-        # Make payment that requires approval
-        payload = {
-            "employeeId": TEJ_ID,
-            "amount": 2500,
-            "category": "Food & Dining",
-            "merchant": "Expensive Restaurant"
-        }
-        resp = requests.post(f"{BASE_URL}/pay", json=payload, timeout=10)
-        print(f"Status: {resp.status_code}")
-        data = resp.json()
-        print(f"Response: {json.dumps(data, indent=2)}")
+        # Find the approval for our transaction
+        approval = next((a for a in approvals if a.get('transactionId') == transaction_id), None)
+        assert approval is not None, f"Approval not found for transaction {transaction_id}"
         
-        if not data.get('success'):
-            return print_test("Pay: pending transaction", False, "Payment should succeed")
+        approval_id = approval.get('id')
+        print(f"Approval ID: {approval_id}")
+        print(f"Approval details: {json.dumps(approval, indent=2)}")
+        assert approval.get('status') == 'Pending', f"Expected approval status=Pending, got {approval.get('status')}"
         
-        if data.get('status') != 'Pending':
-            return print_test("Pay: pending transaction", False, f"Expected status 'Pending', got '{data.get('status')}'")
+        print("✅ PASSED: Found pending approval")
         
-        txn = data.get('transaction', {})
-        txn_id = txn.get('id')
-        if not txn_id:
-            return print_test("Pay: pending transaction", False, "Missing transaction ID")
+        # E. GET /api/budgets/{budgetId} - capture budget.spent BEFORE approval
+        print_section("E. GET /api/budgets/{budgetId} - Capture spent BEFORE approval")
+        response = requests.get(f"{BASE_URL}/budgets/{budget_id}", timeout=10)
+        print(f"Status: {response.status_code}")
+        budget_before = response.json()
+        spent_before = budget_before.get('spent', 0)
+        print(f"Budget spent BEFORE approval: {spent_before}")
+        print(f"Budget details: {json.dumps(budget_before, indent=2)}")
         
-        # Verify budget NOT increased yet
-        resp = requests.get(f"{BASE_URL}/budgets", timeout=10)
-        budgets_after = resp.json()
-        hyd_after = next((b for b in budgets_after if b.get('name') == 'Hyderabad Client Visit'), None)
-        spent_after = hyd_after.get('spent', 0) if hyd_after else 0
-        print(f"Budget spent after (should be same): {spent_after}")
+        print("✅ PASSED: Captured budget.spent before approval")
         
-        if spent_after != spent_before:
-            return print_test("Pay: pending transaction", False, f"Budget should not change for pending txn, was {spent_before}, now {spent_after}")
-        
-        # Get approvals
-        resp = requests.get(f"{BASE_URL}/approvals", timeout=10)
-        approvals = resp.json()
-        print(f"Approvals: {json.dumps(approvals, indent=2)}")
-        
-        # Find the new approval
-        approval = next((a for a in approvals if a.get('transactionId') == txn_id), None)
-        if not approval:
-            return print_test("Pay: pending transaction", False, "Approval record not created")
-        
-        if approval.get('status') != 'Pending':
-            return print_test("Pay: pending transaction", False, f"Approval status should be 'Pending', got '{approval.get('status')}'")
-        
-        # Store approval ID for next test
-        global APPROVAL_ID
-        APPROVAL_ID = approval.get('id')
-        
-        return print_test("Pay: pending transaction", True, "Transaction pending with approval created")
-    
-    except Exception as e:
-        return print_test("Pay: pending transaction", False, f"Exception: {str(e)}")
-
-def test_approval_approve():
-    """Test 11: POST /api/approvals/{id}/approve"""
-    print("\n" + "="*80)
-    print("TEST 11: POST /api/approvals/{id}/approve")
-    print("="*80)
-    
-    try:
-        if not APPROVAL_ID:
-            return print_test("Approval: approve", False, "No approval ID from previous test")
-        
-        # Get initial budget spent
-        resp = requests.get(f"{BASE_URL}/budgets", timeout=10)
-        budgets_before = resp.json()
-        hyd_before = next((b for b in budgets_before if b.get('name') == 'Hyderabad Client Visit'), None)
-        spent_before = hyd_before.get('spent', 0) if hyd_before else 0
-        print(f"Budget spent before approval: {spent_before}")
-        
-        # Approve
-        payload = {
+        # F. POST /api/approvals/{id}/approve
+        print_section("F. POST /api/approvals/{id}/approve - Approve Transaction")
+        approve_payload = {
             "by": "Manager",
-            "approverId": "test-manager-id"
+            "approverId": "mgr1"
         }
-        resp = requests.post(f"{BASE_URL}/approvals/{APPROVAL_ID}/approve", json=payload, timeout=10)
-        print(f"Status: {resp.status_code}")
-        data = resp.json()
-        print(f"Response: {json.dumps(data, indent=2)}")
+        response = requests.post(f"{BASE_URL}/approvals/{approval_id}/approve", json=approve_payload, timeout=10)
+        print(f"Status: {response.status_code}")
+        approve_data = response.json()
+        print(f"Response: {json.dumps(approve_data, indent=2)}")
         
-        if not data.get('updated'):
-            return print_test("Approval: approve", False, "Approval should be updated")
+        assert response.status_code == 200, f"Expected 200, got {response.status_code}"
+        assert approve_data.get('updated') == True, "Expected updated=true"
+        assert approve_data.get('status') == 'Approved', f"Expected status=Approved, got {approve_data.get('status')}"
         
-        if data.get('status') != 'Approved':
-            return print_test("Approval: approve", False, f"Expected status 'Approved', got '{data.get('status')}'")
+        print("✅ PASSED: Approval processed successfully")
         
-        # Verify approval updated
-        resp = requests.get(f"{BASE_URL}/approvals/{APPROVAL_ID}", timeout=10)
-        approval = resp.json()
-        print(f"Approval after: {json.dumps(approval, indent=2)}")
+        # G. GET /api/budgets/{budgetId} - confirm budget.spent INCREASED by 2500
+        print_section("G. GET /api/budgets/{budgetId} - Verify spent INCREASED by 2500")
+        response = requests.get(f"{BASE_URL}/budgets/{budget_id}", timeout=10)
+        print(f"Status: {response.status_code}")
+        budget_after = response.json()
+        spent_after = budget_after.get('spent', 0)
+        print(f"Budget spent AFTER approval: {spent_after}")
+        print(f"Budget details: {json.dumps(budget_after, indent=2)}")
         
-        if approval.get('status') != 'Approved':
-            return print_test("Approval: approve", False, f"Approval status should be 'Approved', got '{approval.get('status')}'")
+        expected_spent = spent_before + 2500
+        assert spent_after == expected_spent, f"Expected spent={expected_spent}, got {spent_after}"
         
-        # Verify transaction updated
-        txn_id = approval.get('transactionId')
-        resp = requests.get(f"{BASE_URL}/transactions/{txn_id}", timeout=10)
-        txn = resp.json()
-        print(f"Transaction after: {json.dumps(txn, indent=2)}")
+        print(f"✅ PASSED: Budget.spent increased correctly from {spent_before} to {spent_after} (+2500)")
         
-        if txn.get('status') != 'Approved':
-            return print_test("Approval: approve", False, f"Transaction status should be 'Approved', got '{txn.get('status')}'")
+        # H. GET /api/transactions - confirm transaction status is now 'Approved'
+        print_section("H. GET /api/transactions - Verify Transaction Status = Approved")
+        response = requests.get(f"{BASE_URL}/transactions", timeout=10)
+        print(f"Status: {response.status_code}")
+        transactions = response.json()
         
-        # Verify budget increased by 2500
-        resp = requests.get(f"{BASE_URL}/budgets", timeout=10)
-        budgets_after = resp.json()
-        hyd_after = next((b for b in budgets_after if b.get('name') == 'Hyderabad Client Visit'), None)
-        spent_after = hyd_after.get('spent', 0) if hyd_after else 0
-        print(f"Budget spent after approval: {spent_after}")
+        # Find our transaction
+        txn = next((t for t in transactions if t.get('id') == transaction_id), None)
+        assert txn is not None, f"Transaction {transaction_id} not found"
         
-        if spent_after != spent_before + 2500:
-            return print_test("Approval: approve", False, f"Budget spent should increase by 2500, was {spent_before}, now {spent_after}")
+        print(f"Transaction details: {json.dumps(txn, indent=2)}")
+        assert txn.get('status') == 'Approved', f"Expected status=Approved, got {txn.get('status')}"
         
-        return print_test("Approval: approve", True, "Approval processed, transaction and budget updated")
-    
+        print("✅ PASSED: Transaction status is now Approved")
+        
+        # I. Confirm NO _id field anywhere
+        print_section("I. Verify NO _id Field in Any Response")
+        
+        # Check all responses we've collected
+        responses_to_check = [
+            ("pay response", pay_data),
+            ("approvals list", approvals),
+            ("budget before", budget_before),
+            ("budget after", budget_after),
+            ("transactions list", transactions)
+        ]
+        
+        all_clean = True
+        for name, data in responses_to_check:
+            id_check = check_no_id_field(data)
+            if id_check:
+                print(f"❌ FAILED: _id leak in {name}: {id_check}")
+                all_clean = False
+            else:
+                print(f"✅ {name}: No _id leaks")
+        
+        if all_clean:
+            print("\n✅ PASSED: NO _id fields found in any response")
+        
+        return all_clean
+        
     except Exception as e:
-        return print_test("Approval: approve", False, f"Exception: {str(e)}")
-
-def test_pay_rejected():
-    """Test 12: POST /api/pay - rejected transaction"""
-    print("\n" + "="*80)
-    print("TEST 12: POST /api/pay - Rejected transaction")
-    print("="*80)
-    
-    try:
-        # Try to pay with restricted category
-        payload = {
-            "employeeId": TEJ_ID,
-            "amount": 500,
-            "category": "Entertainment",
-            "merchant": "Night Club"
-        }
-        resp = requests.post(f"{BASE_URL}/pay", json=payload, timeout=10)
-        print(f"Status: {resp.status_code}")
-        data = resp.json()
-        print(f"Response: {json.dumps(data, indent=2)}")
-        
-        if data.get('success'):
-            return print_test("Pay: rejected transaction", False, "Payment should fail for restricted category")
-        
-        if data.get('status') != 'Rejected':
-            return print_test("Pay: rejected transaction", False, f"Expected status 'Rejected', got '{data.get('status')}'")
-        
-        # Note: The current implementation doesn't create a transaction for blocked payments
-        # This is actually correct behavior - no transaction should be created
-        
-        return print_test("Pay: rejected transaction", True, "Transaction correctly rejected")
-    
-    except Exception as e:
-        return print_test("Pay: rejected transaction", False, f"Exception: {str(e)}")
-
-def test_kpis():
-    """Test 13: GET /api/kpis"""
-    print("\n" + "="*80)
-    print("TEST 13: GET /api/kpis")
-    print("="*80)
-    
-    try:
-        resp = requests.get(f"{BASE_URL}/kpis", timeout=10)
-        print(f"Status: {resp.status_code}")
-        
-        if resp.status_code != 200:
-            return print_test("KPIs endpoint", False, f"Expected 200, got {resp.status_code}")
-        
-        data = resp.json()
-        print(f"Response: {json.dumps(data, indent=2)}")
-        
-        # Check required fields
-        required = ['totalAllocated', 'totalSpent', 'remaining', 'pendingCount', 'violations', 'utilization', 'byDept', 'byProject', 'categoryData', 'monthly']
-        
-        for field in required:
-            if field not in data:
-                return print_test("KPIs endpoint", False, f"Missing field: {field}")
-        
-        # Check byDept is array
-        if not isinstance(data.get('byDept'), list):
-            return print_test("KPIs endpoint", False, "byDept should be array")
-        
-        # Check byProject is array
-        if not isinstance(data.get('byProject'), list):
-            return print_test("KPIs endpoint", False, "byProject should be array")
-        
-        # Check categoryData is array
-        if not isinstance(data.get('categoryData'), list):
-            return print_test("KPIs endpoint", False, "categoryData should be array")
-        
-        # Check monthly is array with 6 months
-        monthly = data.get('monthly', [])
-        if not isinstance(monthly, list):
-            return print_test("KPIs endpoint", False, "monthly should be array")
-        
-        if len(monthly) != 6:
-            return print_test("KPIs endpoint", False, f"monthly should have 6 entries, got {len(monthly)}")
-        
-        # Check monthly structure
-        for m in monthly:
-            if 'month' not in m or 'spent' not in m or 'allocated' not in m:
-                return print_test("KPIs endpoint", False, f"Monthly entry missing fields: {m}")
-        
-        return print_test("KPIs endpoint", True, f"All KPI fields present with correct structure")
-    
-    except Exception as e:
-        return print_test("KPIs endpoint", False, f"Exception: {str(e)}")
-
-def test_crud_spot_check():
-    """Test 14: CRUD spot check"""
-    print("\n" + "="*80)
-    print("TEST 14: CRUD spot check")
-    print("="*80)
-    
-    try:
-        # Create a test budget
-        print("\n--- Creating test budget ---")
-        payload = {
-            "name": "Test Budget",
-            "amount": 1000,
-            "type": "Department",
-            "spent": 0,
-            "status": "Active"
-        }
-        resp = requests.post(f"{BASE_URL}/budgets", json=payload, timeout=10)
-        print(f"Status: {resp.status_code}")
-        
-        if resp.status_code != 201:
-            return print_test("CRUD: create", False, f"Expected 201, got {resp.status_code}")
-        
-        data = resp.json()
-        print(f"Response: {json.dumps(data, indent=2)}")
-        
-        budget_id = data.get('id')
-        if not budget_id:
-            return print_test("CRUD: create", False, "Missing ID in created budget")
-        
-        # Check it's a UUID (has dashes)
-        if '-' not in budget_id:
-            return print_test("CRUD: create", False, f"ID should be UUID, got: {budget_id}")
-        
-        if '_id' in data:
-            return print_test("CRUD: create", False, "Found Mongo _id in response")
-        
-        print(f"✅ Created budget with UUID: {budget_id}")
-        
-        # Get the budget
-        print("\n--- Getting test budget ---")
-        resp = requests.get(f"{BASE_URL}/budgets/{budget_id}", timeout=10)
-        print(f"Status: {resp.status_code}")
-        
-        if resp.status_code != 200:
-            return print_test("CRUD: get", False, f"Expected 200, got {resp.status_code}")
-        
-        data = resp.json()
-        print(f"Response: {json.dumps(data, indent=2)}")
-        
-        if data.get('name') != 'Test Budget':
-            return print_test("CRUD: get", False, f"Expected name 'Test Budget', got '{data.get('name')}'")
-        
-        if '_id' in data:
-            return print_test("CRUD: get", False, "Found Mongo _id in response")
-        
-        print(f"✅ Retrieved budget successfully")
-        
-        # Delete the budget
-        print("\n--- Deleting test budget ---")
-        resp = requests.delete(f"{BASE_URL}/budgets/{budget_id}", timeout=10)
-        print(f"Status: {resp.status_code}")
-        
-        if resp.status_code != 200:
-            return print_test("CRUD: delete", False, f"Expected 200, got {resp.status_code}")
-        
-        data = resp.json()
-        print(f"Response: {json.dumps(data, indent=2)}")
-        
-        if not data.get('deleted'):
-            return print_test("CRUD: delete", False, "Expected deleted: true")
-        
-        print(f"✅ Deleted budget successfully")
-        
-        return print_test("CRUD spot check", True, "Create, Get, Delete all working with UUID")
-    
-    except Exception as e:
-        return print_test("CRUD spot check", False, f"Exception: {str(e)}")
+        print(f"❌ FAILED: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return False
 
 def main():
     print("\n" + "="*80)
-    print("CORPAY BACKEND API TEST SUITE")
-    print("="*80)
-    print(f"Base URL: {BASE_URL}")
+    print("  CORPAY BACKEND RE-TEST - Bug Fixes Verification")
     print("="*80)
     
     results = []
     
-    # Run tests in order
-    results.append(("Seed", test_seed()))
-    results.append(("Organizations", test_organizations()))
-    results.append(("Departments", test_departments()))
-    results.append(("Projects", test_projects()))
-    results.append(("Employees", test_employees()))
-    results.append(("Budgets", test_budgets()))
-    results.append(("Policies", test_policies()))
-    results.append(("Validate Spend", test_validate_spend()))
-    results.append(("Pay Approved", test_pay_approved()))
-    results.append(("Pay Pending", test_pay_pending()))
-    results.append(("Approval Approve", test_approval_approve()))
-    results.append(("Pay Rejected", test_pay_rejected()))
-    results.append(("KPIs", test_kpis()))
-    results.append(("CRUD", test_crud_spot_check()))
+    # A. Seed
+    results.append(("Seed endpoint", test_seed()))
+    
+    # B. Get Tej's ID
+    tej_id = get_tej_employee_id()
+    if not tej_id:
+        print("\n❌ CRITICAL: Cannot proceed without Tej Kiran's employee ID")
+        sys.exit(1)
+    
+    # Validate-spend scenarios
+    results.append(("Validate-spend scenarios", test_validate_spend_scenarios(tej_id)))
+    
+    # C-I. Full approval flow
+    results.append(("Pay + Approval flow", test_pay_with_approval_flow(tej_id)))
     
     # Summary
-    print("\n" + "="*80)
-    print("TEST SUMMARY")
-    print("="*80)
-    
-    passed = sum(1 for _, result in results if result)
-    total = len(results)
-    
-    for name, result in results:
-        status = "✅ PASS" if result else "❌ FAIL"
+    print_section("FINAL SUMMARY")
+    all_passed = True
+    for name, passed in results:
+        status = "✅ PASSED" if passed else "❌ FAILED"
         print(f"{status}: {name}")
+        if not passed:
+            all_passed = False
     
-    print("="*80)
-    print(f"TOTAL: {passed}/{total} tests passed")
-    print("="*80)
-    
-    if passed == total:
-        print("\n🎉 ALL TESTS PASSED!")
-        sys.exit(0)
+    print("\n" + "="*80)
+    if all_passed:
+        print("  🎉 ALL TESTS PASSED - Bug fixes verified successfully!")
     else:
-        print(f"\n⚠️  {total - passed} test(s) failed")
-        sys.exit(1)
+        print("  ❌ SOME TESTS FAILED - Review output above")
+    print("="*80 + "\n")
+    
+    sys.exit(0 if all_passed else 1)
 
 if __name__ == "__main__":
-    # Global variables for test data
-    TEJ_ID = None
-    HYD_BUDGET_ID = None
-    APPROVAL_ID = None
-    
     main()

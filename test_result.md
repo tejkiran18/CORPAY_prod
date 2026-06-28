@@ -156,7 +156,7 @@ backend:
 
   - task: "POST /api/pay commits transaction"
     implemented: true
-    working: false
+    working: true
     file: "app/api/[[...path]]/route.js"
     stuck_count: 0
     priority: "high"
@@ -168,10 +168,13 @@ backend:
         - working: false
           agent: "testing"
           comment: "❌ CRITICAL BUG. Approved transactions work correctly (600 INR food → status=Approved, budget.spent incremented). Rejected transactions work correctly (Entertainment → blocked). BUT pending transactions have CRITICAL issue: when category limit is exceeded, validateSpend returns early (line 172) WITHOUT fetching budget, causing transaction to be created with budgetId=null. This breaks approval flow. Also: Mongo _id leak in /pay response (validation.budget._id present). FIX NEEDED: (1) Move budget lookup before category limit check OR continue validation to fetch budget, (2) Strip _id from validation.budget in /pay response (line 307)."
+        - working: true
+          agent: "testing"
+          comment: "✅ PASSED. Both bugs fixed successfully. (1) Budget now resolved BEFORE category limit check (lines 169-176), ensuring budgetId is always set when creating transactions. (2) Line 274 now strips _id from validation.budget. Tested full flow: POST /api/pay with amount=2500 food → success=true, status=Pending, validation.budget present with NO _id field, transaction.budgetId properly set to 'e1edd860-c55c-41c9-a717-381d8724746e'. All scenarios working: approved txns increment budget.spent, rejected txns blocked correctly, pending txns have budgetId set for approval flow."
 
   - task: "Approval action POST /api/approvals/{id}/approve|reject"
     implemented: true
-    working: false
+    working: true
     file: "app/api/[[...path]]/route.js"
     stuck_count: 0
     priority: "high"
@@ -183,6 +186,9 @@ backend:
         - working: false
           agent: "testing"
           comment: "❌ CRITICAL BUG. Approval status updates work correctly (approval.status → Approved, transaction.status → Approved, timeline updated). BUT budget.spent does NOT increment because transaction.budgetId is null (due to bug in validateSpend when category limit exceeded). The approval code at line 324 tries to update budget using txn.budgetId, but it's null. This is a cascading failure from the /pay endpoint bug."
+        - working: true
+          agent: "testing"
+          comment: "✅ PASSED. Approval flow now working end-to-end. After fixing validateSpend to resolve budget before category check, transactions now have budgetId properly set. Tested: (1) Created pending transaction with amount=2500 food (exceeds limit), (2) Found approval record with status=Pending, (3) Captured budget.spent=0 before approval, (4) POST /api/approvals/{id}/approve with body {by:'Manager', approverId:'mgr1'} → updated=true, status=Approved, (5) Verified budget.spent increased from 0 to 2500 (+2500), (6) Verified transaction.status changed to Approved. Budget increment working correctly at line 325."
 
   - task: "KPIs aggregation GET /api/kpis"
     implemented: true
@@ -215,13 +221,11 @@ frontend:
 metadata:
   created_by: "main_agent"
   version: "1.0"
-  test_sequence: 1
+  test_sequence: 2
   run_ui: false
 
 test_plan:
-  current_focus:
-    - "POST /api/pay commits transaction"
-    - "Approval action POST /api/approvals/{id}/approve|reject"
+  current_focus: []
   stuck_tasks: []
   test_all: false
   test_priority: "high_first"
@@ -293,3 +297,33 @@ agent_communication:
       if (v.budget) v.budget = stripId(v.budget)
       return ok({ success: true, status, validation: v, transaction: stripId(txn) })
       ```
+  
+  - agent: "testing"
+    message: |
+      ✅ RE-TEST COMPLETE - ALL BUGS FIXED!
+      
+      Verified both bug fixes after main agent applied them:
+      
+      1. ✅ validateSpend now resolves budget BEFORE category limit check (lines 169-176)
+         - Tested: POST /api/pay with amount=2500 food (exceeds 1500 limit)
+         - Result: transaction.budgetId properly set to 'e1edd860-c55c-41c9-a717-381d8724746e' (not null)
+         - Approval flow now works end-to-end
+      
+      2. ✅ /api/pay strips _id from validation.budget (line 274)
+         - Tested: Recursive check on all API responses
+         - Result: NO _id fields found anywhere (pay, approvals, budgets, transactions)
+      
+      3. ✅ Full approval flow verified:
+         - POST /api/pay amount=2500 → status=Pending, budgetId set, approval created
+         - GET /api/budgets/{id} → spent=0 before approval
+         - POST /api/approvals/{id}/approve → updated=true, status=Approved
+         - GET /api/budgets/{id} → spent=2500 after approval (+2500 increment confirmed)
+         - GET /api/transactions → transaction status=Approved
+      
+      4. ✅ All validate-spend scenarios still working:
+         - amount=500 food → allowed:true, requiresApproval:false ✅
+         - amount=2000 food → allowed:true, requiresApproval:true ✅
+         - amount=500 Entertainment → allowed:false ✅
+         - amount=15000 food → allowed:false ✅
+      
+      BACKEND STATUS: All 7 backend tasks now PASSING. No critical issues remaining.

@@ -165,22 +165,22 @@ async function validateSpend({ db, employeeId, amount, category, budgetId }) {
   if (amount > policy.perTransactionLimit) {
     return { allowed: false, reason: `Exceeds per-transaction limit \u20B9${policy.perTransactionLimit}`, severity: 'danger' }
   }
-  // Category limits
-  const catLimits = { 'Food & Dining': policy.foodLimit, 'Hotel & Stay': policy.hotelLimit, 'Travel': policy.travelLimit }
-  const catLimit = catLimits[category]
-  if (catLimit && amount > catLimit) {
-    return { allowed: true, requiresApproval: true, reason: `Exceeds ${category} limit \u20B9${catLimit} \u2014 manager approval required`, severity: 'warning' }
-  }
 
-  // Budget
+  // Budget (resolve first so it's always attached to validation result)
   let budget = null
   if (budgetId) budget = await db.collection('budgets').findOne({ id: budgetId })
   if (!budget) {
-    // try to auto-pick an employee/project budget
     budget = await db.collection('budgets').findOne({ employeeId })
     if (!budget) budget = await db.collection('budgets').findOne({ projectId: employee.projectId })
   }
   if (!budget) return { allowed: false, reason: 'No matching budget allocation found', severity: 'danger' }
+
+  // Category limits
+  const catLimits = { 'Food & Dining': policy.foodLimit, 'Hotel & Stay': policy.hotelLimit, 'Travel': policy.travelLimit }
+  const catLimit = catLimits[category]
+  if (catLimit && amount > catLimit) {
+    return { allowed: true, requiresApproval: true, reason: `Exceeds ${category} limit \u20B9${catLimit} \u2014 manager approval required`, severity: 'warning', budget }
+  }
 
   const available = budget.amount - (budget.spent || 0)
   if (amount > available) {
@@ -271,6 +271,7 @@ async function handle(req, ctx) {
       const body = await req.json()
       const { employeeId, amount, category, merchant, projectId, budgetId } = body
       const v = await validateSpend({ db, employeeId, amount, category, budgetId })
+      if (v.budget) v.budget = stripId(v.budget)
       if (!v.allowed) return ok({ success: false, status: 'Rejected', validation: v })
 
       const employee = await db.collection('employees').findOne({ id: employeeId })
