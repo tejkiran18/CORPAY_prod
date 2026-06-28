@@ -240,8 +240,8 @@ async function handle(req, ctx) {
       return ok(stripId(doc), 201)
     }
 
-    // Single doc by id
-    const segIdMatch = segments.length === 2 && collectionsMap[segments[0]]
+    // Single doc by id (excluding action-words like 'export')
+    const segIdMatch = segments.length === 2 && collectionsMap[segments[0]] && !['export'].includes(segments[1])
     if (segIdMatch && method === 'GET') {
       const doc = await db.collection(collectionsMap[segments[0]]).findOne({ id: segments[1] })
       if (!doc) return err('Not found', 404)
