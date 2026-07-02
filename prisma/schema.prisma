@@ -1,0 +1,881 @@
+// CORPAY — Enterprise Prisma Schema
+// Sprint 3 · v1.0 (for review, no migrations run yet)
+// PostgreSQL 15 (Neon)
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// =====================================================================
+// ENUMS
+// =====================================================================
+
+enum EmployeeStatus  { ACTIVE INACTIVE SUSPENDED TERMINATED }
+enum ProjectStatus   { ACTIVE ON_HOLD COMPLETED CANCELLED }
+enum BudgetType      { TRAVEL PROJECT DEPARTMENT EMPLOYEE EVENT MISC }
+enum BudgetStatus    { DRAFT ACTIVE PAUSED CLOSED }
+enum EventType       { TRIP CLIENT_VISIT CONFERENCE ONSITE TRAINING OTHER }
+enum EventStatus     { PLANNED APPROVED IN_PROGRESS COMPLETED CANCELLED }
+enum TravelMode      { FLIGHT TRAIN CAR BUS TAXI }
+enum PaymentStatus   { INITIATED APPROVED PENDING REJECTED FAILED REFUNDED }
+enum ApprovalStatus  { PENDING APPROVED REJECTED CANCELLED ESCALATED }
+enum ApprovalAction  { REQUESTED APPROVED REJECTED ESCALATED COMMENTED WITHDRAWN }
+enum RiskLevel       { LOW MEDIUM HIGH CRITICAL }
+enum RiskType        { VELOCITY OUT_OF_POLICY GEO_ANOMALY UNUSUAL_MERCHANT HIGH_AMOUNT DUPLICATE OFF_HOURS }
+enum Severity        { LOW MEDIUM HIGH CRITICAL }
+enum NotifChannel    { INAPP EMAIL SMS PUSH }
+enum NotifStatus     { UNREAD READ DISMISSED }
+enum AuditAction     { CREATE UPDATE DELETE APPROVE REJECT LOGIN LOGOUT PAYMENT POLICY_CHANGE ROLE_CHANGE SETTINGS_UPDATE }
+enum RuleOperator    { EQ NEQ GT GTE LT LTE IN NOT_IN CONTAINS BETWEEN }
+enum RuleConnector   { AND OR NOT }
+enum RuleAction      { BLOCK REQUIRE_APPROVAL WARN AUTO_APPROVE }
+enum RuleType        { CATEGORY_LIMIT PER_TRANSACTION_LIMIT DAILY_LIMIT WEEKLY_LIMIT MONTHLY_LIMIT ALLOWED_CATEGORY RESTRICTED_CATEGORY APPROVAL_THRESHOLD MERCHANT_RULE GEO_RULE TIME_RULE VELOCITY_RULE }
+enum SpendingRightMode { ALLOWED BLOCKED }
+enum ApprovalSubject { TRANSACTION BUDGET SPENDING_RIGHT BUSINESS_EVENT }
+
+// =====================================================================
+// REFERENCE
+// =====================================================================
+
+model Country {
+  id           String   @id @default(uuid()) @db.Uuid
+  code         String   @unique @db.VarChar(2)         // ISO-3166-1 alpha-2
+  name         String   @db.VarChar(80)
+  currencyCode String?  @db.VarChar(3)
+
+  cities        City[]
+  organizations Organization[]
+
+  @@map("countries")
+}
+
+model City {
+  id        String @id @default(uuid()) @db.Uuid
+  countryId String @db.Uuid
+  name      String @db.VarChar(120)
+  state     String? @db.VarChar(120)
+  latitude  Decimal? @db.Decimal(9,6)
+  longitude Decimal? @db.Decimal(9,6)
+
+  country   Country @relation(fields: [countryId], references: [id])
+  merchants Merchant[]
+  tripsOrigin      Trip[] @relation("tripOrigin")
+  tripsDestination Trip[] @relation("tripDestination")
+
+  @@unique([countryId, name])
+  @@index([countryId])
+  @@map("cities")
+}
+
+model Currency {
+  code     String  @id @db.VarChar(3)                  // ISO-4217
+  name     String  @db.VarChar(60)
+  symbol   String  @db.VarChar(8)
+  decimals Int     @default(2)
+
+  organizations   Organization[]
+  budgets         Budget[]
+  spendingRights  SpendingRight[]
+  transactions    Transaction[]
+
+  @@map("currencies")
+}
+
+model Permission {
+  id          String @id @default(uuid()) @db.Uuid
+  code        String @unique @db.VarChar(80)          // e.g. 'BUDGET:CREATE'
+  module      String @db.VarChar(40)                  // 'BUDGET','POLICY','APPROVAL' …
+  description String @db.VarChar(200)
+
+  roles RolePermission[]
+
+  @@index([module])
+  @@map("permissions")
+}
+
+// =====================================================================
+// ORGANIZATION
+// =====================================================================
+
+model Organization {
+  id            String   @id @default(uuid()) @db.Uuid
+  legalName     String   @db.VarChar(160)
+  displayName   String   @db.VarChar(80)
+  gstin         String?  @unique @db.VarChar(20)
+  currencyCode  String   @db.VarChar(3)
+  countryId     String   @db.Uuid
+  address       String?  @db.Text
+  createdAt     DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt     DateTime @updatedAt @db.Timestamptz(6)
+  createdById   String?  @db.Uuid
+  deletedAt     DateTime? @db.Timestamptz(6)
+
+  country       Country  @relation(fields: [countryId], references: [id])
+  currency      Currency @relation(fields: [currencyCode], references: [code])
+
+  businessUnits   BusinessUnit[]
+  departments     Department[]
+  costCenters     CostCenter[]
+  projects        Project[]
+  employees       Employee[]
+  policies        Policy[]
+  budgets         Budget[]
+  budgetCategories BudgetCategory[]
+  transactionCategories TransactionCategory[]
+  spendingRights  SpendingRight[]
+  businessEvents  BusinessEvent[]
+  approvalWorkflows ApprovalWorkflow[]
+  transactions    Transaction[]
+  auditLogs       AuditLog[]
+  notifications   Notification[]
+  attachments     Attachment[]
+  riskEvents      RiskEvent[]
+  settings        Setting[]
+
+  @@map("organizations")
+}
+
+model BusinessUnit {
+  id             String @id @default(uuid()) @db.Uuid
+  organizationId String @db.Uuid
+  name           String @db.VarChar(120)
+  code           String @db.VarChar(20)
+  headEmployeeId String? @db.Uuid
+  active         Boolean @default(true)
+
+  organization Organization @relation(fields: [organizationId], references: [id])
+  head         Employee?    @relation("buHead", fields: [headEmployeeId], references: [id])
+  departments  Department[]
+
+  @@unique([organizationId, code])
+  @@index([organizationId])
+  @@map("business_units")
+}
+
+model Department {
+  id             String @id @default(uuid()) @db.Uuid
+  organizationId String @db.Uuid
+  businessUnitId String? @db.Uuid
+  name           String  @db.VarChar(80)
+  headEmployeeId String? @db.Uuid
+  active         Boolean @default(true)
+  createdAt      DateTime @default(now()) @db.Timestamptz(6)
+
+  organization  Organization  @relation(fields: [organizationId], references: [id])
+  businessUnit  BusinessUnit? @relation(fields: [businessUnitId], references: [id])
+  head          Employee?     @relation("deptHead", fields: [headEmployeeId], references: [id])
+  costCenters   CostCenter[]
+  employees     Employee[]
+
+  @@unique([organizationId, name])
+  @@index([organizationId, businessUnitId])
+  @@map("departments")
+}
+
+model CostCenter {
+  id             String @id @default(uuid()) @db.Uuid
+  organizationId String @db.Uuid
+  departmentId   String @db.Uuid
+  code           String @db.VarChar(20)
+  name           String @db.VarChar(120)
+  budgetCeiling  Decimal? @db.Decimal(14,2)
+  active         Boolean @default(true)
+
+  organization Organization @relation(fields: [organizationId], references: [id])
+  department   Department   @relation(fields: [departmentId], references: [id])
+  budgets      Budget[]
+  spendingRights SpendingRight[]
+  transactions Transaction[]
+  businessEvents BusinessEvent[]
+
+  @@unique([organizationId, code])
+  @@index([departmentId])
+  @@map("cost_centers")
+}
+
+model ProjectType {
+  id          String @id @default(uuid()) @db.Uuid
+  name        String @unique @db.VarChar(60)
+  description String? @db.VarChar(200)
+
+  projects Project[]
+  @@map("project_types")
+}
+
+model Project {
+  id             String @id @default(uuid()) @db.Uuid
+  organizationId String @db.Uuid
+  typeId         String? @db.Uuid
+  code           String @db.VarChar(20)
+  name           String @db.VarChar(160)
+  client         String? @db.VarChar(160)
+  status         ProjectStatus @default(ACTIVE)
+  budgetCap      Decimal? @db.Decimal(14,2)
+  startDate      DateTime? @db.Date
+  endDate        DateTime? @db.Date
+  createdAt      DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt      DateTime @updatedAt @db.Timestamptz(6)
+
+  organization Organization @relation(fields: [organizationId], references: [id])
+  type         ProjectType? @relation(fields: [typeId], references: [id])
+  employees    Employee[]
+  budgets      Budget[]
+  spendingRights SpendingRight[]
+  businessEvents BusinessEvent[]
+  transactions   Transaction[]
+
+  @@unique([organizationId, code])
+  @@index([organizationId, status])
+  @@map("projects")
+}
+
+// =====================================================================
+// IDENTITY & ACCESS
+// =====================================================================
+
+model EmployeeGrade {
+  id    String @id @default(uuid()) @db.Uuid
+  name  String @unique @db.VarChar(30)
+  level Int    @unique
+  employees Employee[]
+  @@map("employee_grades")
+}
+
+model EmployeeRole {
+  id          String @id @default(uuid()) @db.Uuid
+  name        String @unique @db.VarChar(40)
+  description String? @db.VarChar(200)
+  isSystem    Boolean @default(false)
+
+  employees   Employee[]
+  permissions RolePermission[]
+  approvalSteps ApprovalStep[]
+
+  @@map("employee_roles")
+}
+
+model RolePermission {
+  id           String @id @default(uuid()) @db.Uuid
+  roleId       String @db.Uuid
+  permissionId String @db.Uuid
+
+  role       EmployeeRole @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  permission Permission   @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+
+  @@unique([roleId, permissionId])
+  @@index([roleId])
+  @@map("role_permissions")
+}
+
+model Employee {
+  id              String @id @default(uuid()) @db.Uuid
+  organizationId  String @db.Uuid
+  employeeCode    String @db.VarChar(30)
+  email           String @db.VarChar(160)
+  name            String @db.VarChar(120)
+  phone           String? @db.VarChar(20)
+  designation     String? @db.VarChar(120)
+  gradeId         String? @db.Uuid
+  roleId          String  @db.Uuid
+  departmentId    String? @db.Uuid
+  projectId       String? @db.Uuid
+  status          EmployeeStatus @default(ACTIVE)
+  passwordHash    String? @db.Text
+  lastLoginAt     DateTime? @db.Timestamptz(6)
+  createdAt       DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt       DateTime @updatedAt @db.Timestamptz(6)
+  deletedAt       DateTime? @db.Timestamptz(6)
+
+  organization   Organization  @relation(fields: [organizationId], references: [id])
+  grade          EmployeeGrade? @relation(fields: [gradeId], references: [id])
+  role           EmployeeRole  @relation(fields: [roleId], references: [id])
+  department     Department?   @relation(fields: [departmentId], references: [id])
+  project        Project?      @relation(fields: [projectId], references: [id])
+
+  buLed          BusinessUnit[] @relation("buHead")
+  deptLed        Department[]   @relation("deptHead")
+
+  managersOf     ManagerAssignment[] @relation("asManager")
+  reportsTo      ManagerAssignment[] @relation("asSubordinate")
+
+  sessions        Session[]
+  spendingRights  SpendingRight[]
+  txnsAsEmployee  Transaction[]  @relation("txnEmployee")
+  txnsAsManager   Transaction[]  @relation("txnManager")
+  txnsCreated     Transaction[]  @relation("txnCreatedBy")
+  txnsUpdated     Transaction[]  @relation("txnUpdatedBy")
+  budgetsOwned    Budget[]
+  businessEvents  BusinessEvent[]
+  approvalsRequested Approval[]  @relation("approvalRequester")
+  approvalActions ApprovalHistory[]
+  approvalStepEmployee ApprovalStep[]
+  notifications   Notification[]
+  riskResolved    RiskEvent[]  @relation("riskResolvedBy")
+  riskAsEmployee  RiskEvent[]  @relation("riskEmployee")
+  auditActions    AuditLog[]
+  attachmentsUploaded Attachment[]
+  settingsUpdated Setting[]
+
+  @@unique([organizationId, email])
+  @@unique([organizationId, employeeCode])
+  @@index([organizationId, roleId])
+  @@index([organizationId, departmentId])
+  @@index([organizationId, status])
+  @@map("employees")
+}
+
+model ManagerAssignment {
+  id           String @id @default(uuid()) @db.Uuid
+  managerId    String @db.Uuid
+  subordinateId String @db.Uuid
+  effectiveFrom DateTime @default(now()) @db.Timestamptz(6)
+  effectiveTo   DateTime? @db.Timestamptz(6)
+  primary      Boolean @default(true)
+
+  manager     Employee @relation("asManager", fields: [managerId], references: [id])
+  subordinate Employee @relation("asSubordinate", fields: [subordinateId], references: [id])
+
+  @@unique([managerId, subordinateId, effectiveFrom])
+  @@index([subordinateId])
+  @@map("manager_assignments")
+}
+
+model Session {
+  id           String @id @default(uuid()) @db.Uuid
+  employeeId   String @db.Uuid
+  tokenHash    String @unique @db.VarChar(120)
+  issuedAt     DateTime @default(now()) @db.Timestamptz(6)
+  expiresAt    DateTime @db.Timestamptz(6)
+  ipAddress    String? @db.VarChar(45)
+  userAgent    String? @db.Text
+  revokedAt    DateTime? @db.Timestamptz(6)
+
+  employee Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+
+  @@index([employeeId, expiresAt])
+  @@map("sessions")
+}
+
+// =====================================================================
+// POLICY ENGINE
+// =====================================================================
+
+model Policy {
+  id             String @id @default(uuid()) @db.Uuid
+  organizationId String @db.Uuid
+  name           String @db.VarChar(120)
+  description    String? @db.VarChar(400)
+  isDefault      Boolean @default(false)
+  active         Boolean @default(true)
+  effectiveFrom  DateTime? @db.Date
+  effectiveTo    DateTime? @db.Date
+  createdAt      DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt      DateTime @updatedAt @db.Timestamptz(6)
+
+  organization   Organization @relation(fields: [organizationId], references: [id])
+  rules          PolicyRule[]
+  spendingRights SpendingRight[]
+  transactions   Transaction[]
+
+  @@unique([organizationId, name])
+  @@index([organizationId, isDefault])
+  @@map("policies")
+}
+
+model PolicyRule {
+  id                String @id @default(uuid()) @db.Uuid
+  policyId          String @db.Uuid
+  ruleType          RuleType
+  field             String @db.VarChar(60)          // e.g. 'amount','category.name','merchant.mcc','time.hour'
+  operator          RuleOperator
+  valueNumeric      Decimal? @db.Decimal(14,2)
+  valueText         String?  @db.VarChar(160)
+  valueJson         Json?
+  connector         RuleConnector @default(AND)
+  sortOrder         Int @default(0)
+  actionOnViolation RuleAction @default(REQUIRE_APPROVAL)
+  message           String? @db.VarChar(200)
+  active            Boolean @default(true)
+
+  policy Policy @relation(fields: [policyId], references: [id], onDelete: Cascade)
+
+  @@index([policyId, sortOrder])
+  @@index([policyId, active])
+  @@map("policy_rules")
+}
+
+// =====================================================================
+// BUDGETS
+// =====================================================================
+
+model BudgetCategory {
+  id             String @id @default(uuid()) @db.Uuid
+  organizationId String @db.Uuid
+  name           String @db.VarChar(60)
+  description    String? @db.VarChar(200)
+
+  organization Organization @relation(fields: [organizationId], references: [id])
+  budgets      Budget[]
+
+  @@unique([organizationId, name])
+  @@map("budget_categories")
+}
+
+model Budget {
+  id               String @id @default(uuid()) @db.Uuid
+  organizationId   String @db.Uuid
+  categoryId       String? @db.Uuid
+  name             String @db.VarChar(160)
+  type             BudgetType
+  amount           Decimal @db.Decimal(14,2)
+  spent            Decimal @default(0) @db.Decimal(14,2)
+  currencyCode     String @db.VarChar(3)
+  startDate        DateTime @db.Date
+  endDate          DateTime @db.Date
+  costCenterId     String? @db.Uuid
+  projectId        String? @db.Uuid
+  employeeId       String? @db.Uuid
+  businessEventId  String? @db.Uuid
+  approvalRequired Boolean @default(false)
+  status           BudgetStatus @default(ACTIVE)
+  breakdown        Json?
+  createdAt        DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt        DateTime @updatedAt @db.Timestamptz(6)
+
+  organization Organization  @relation(fields: [organizationId], references: [id])
+  category     BudgetCategory? @relation(fields: [categoryId], references: [id])
+  currency     Currency      @relation(fields: [currencyCode], references: [code])
+  costCenter   CostCenter?   @relation(fields: [costCenterId], references: [id])
+  project      Project?      @relation(fields: [projectId], references: [id])
+  employee     Employee?     @relation(fields: [employeeId], references: [id])
+  businessEvent BusinessEvent? @relation(fields: [businessEventId], references: [id])
+
+  transactions Transaction[]
+
+  @@index([organizationId, status])
+  @@index([projectId])
+  @@index([costCenterId])
+  @@index([employeeId])
+  @@map("budgets")
+}
+
+// =====================================================================
+// SPENDING RIGHTS
+// =====================================================================
+
+model SpendingRight {
+  id                    String @id @default(uuid()) @db.Uuid
+  organizationId        String @db.Uuid
+  employeeId            String @db.Uuid
+  projectId             String? @db.Uuid
+  costCenterId          String? @db.Uuid
+  businessEventId       String? @db.Uuid
+  policyId              String? @db.Uuid
+  approvalWorkflowId    String? @db.Uuid
+  allocatedAmount       Decimal @db.Decimal(14,2)
+  consumedAmount        Decimal @default(0) @db.Decimal(14,2)
+  currencyCode          String  @db.VarChar(3)
+  validityStart         DateTime @db.Timestamptz(6)
+  validityEnd           DateTime @db.Timestamptz(6)
+  singleTransactionLimit Decimal? @db.Decimal(14,2)
+  dailyLimit            Decimal? @db.Decimal(14,2)
+  weeklyLimit           Decimal? @db.Decimal(14,2)
+  monthlyLimit          Decimal? @db.Decimal(14,2)
+  riskLevel             RiskLevel @default(LOW)
+  status                BudgetStatus @default(ACTIVE)
+  createdAt             DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt             DateTime @updatedAt @db.Timestamptz(6)
+
+  organization  Organization   @relation(fields: [organizationId], references: [id])
+  employee      Employee       @relation(fields: [employeeId], references: [id])
+  project       Project?       @relation(fields: [projectId], references: [id])
+  costCenter    CostCenter?    @relation(fields: [costCenterId], references: [id])
+  businessEvent BusinessEvent? @relation(fields: [businessEventId], references: [id])
+  policy        Policy?        @relation(fields: [policyId], references: [id])
+  currency      Currency       @relation(fields: [currencyCode], references: [code])
+  approvalWorkflow ApprovalWorkflow? @relation(fields: [approvalWorkflowId], references: [id])
+
+  categories SpendingRightCategory[]
+  transactions Transaction[]
+
+  @@index([organizationId, employeeId, status])
+  @@index([validityEnd])
+  @@map("spending_rights")
+}
+
+model SpendingRightCategory {
+  id                    String @id @default(uuid()) @db.Uuid
+  spendingRightId       String @db.Uuid
+  transactionCategoryId String @db.Uuid
+  mode                  SpendingRightMode
+
+  spendingRight  SpendingRight       @relation(fields: [spendingRightId], references: [id], onDelete: Cascade)
+  category       TransactionCategory @relation(fields: [transactionCategoryId], references: [id])
+
+  @@unique([spendingRightId, transactionCategoryId])
+  @@index([spendingRightId, mode])
+  @@map("spending_right_categories")
+}
+
+// =====================================================================
+// BUSINESS EVENTS
+// =====================================================================
+
+model BusinessEvent {
+  id              String @id @default(uuid()) @db.Uuid
+  organizationId  String @db.Uuid
+  ownerEmployeeId String @db.Uuid
+  projectId       String? @db.Uuid
+  costCenterId    String? @db.Uuid
+  type            EventType
+  name            String @db.VarChar(200)
+  location        String? @db.VarChar(160)
+  startDate       DateTime @db.Date
+  endDate         DateTime @db.Date
+  status          EventStatus @default(PLANNED)
+  createdAt       DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt       DateTime @updatedAt @db.Timestamptz(6)
+
+  organization Organization @relation(fields: [organizationId], references: [id])
+  owner        Employee     @relation(fields: [ownerEmployeeId], references: [id])
+  project      Project?     @relation(fields: [projectId], references: [id])
+  costCenter   CostCenter?  @relation(fields: [costCenterId], references: [id])
+
+  trip          Trip?
+  budgets       Budget[]
+  spendingRights SpendingRight[]
+  transactions  Transaction[]
+
+  @@index([organizationId, status, startDate])
+  @@index([ownerEmployeeId])
+  @@map("business_events")
+}
+
+model Trip {
+  id                  String @id @default(uuid()) @db.Uuid
+  businessEventId     String @unique @db.Uuid
+  originCityId        String? @db.Uuid
+  destinationCityId   String? @db.Uuid
+  mode                TravelMode?
+
+  businessEvent   BusinessEvent @relation(fields: [businessEventId], references: [id], onDelete: Cascade)
+  originCity      City? @relation("tripOrigin",      fields: [originCityId],      references: [id])
+  destinationCity City? @relation("tripDestination", fields: [destinationCityId], references: [id])
+
+  @@map("trips")
+}
+
+// =====================================================================
+// MERCHANTS & CATEGORIES
+// =====================================================================
+
+model MerchantCategory {
+  id                 String @id @default(uuid()) @db.Uuid
+  mcc                String? @unique @db.VarChar(6)
+  name               String @unique @db.VarChar(120)
+  isRestrictedDefault Boolean @default(false)
+
+  merchants     Merchant[]
+  transactions  Transaction[]
+
+  @@map("merchant_categories")
+}
+
+model Merchant {
+  id          String @id @default(uuid()) @db.Uuid
+  name        String @db.VarChar(160)
+  mcc         String? @db.VarChar(6)
+  categoryId  String? @db.Uuid
+  upiId       String? @unique @db.VarChar(60)
+  cityId      String? @db.Uuid
+  latitude    Decimal? @db.Decimal(9,6)
+  longitude   Decimal? @db.Decimal(9,6)
+  verified    Boolean @default(false)
+  createdAt   DateTime @default(now()) @db.Timestamptz(6)
+
+  category     MerchantCategory? @relation(fields: [categoryId], references: [id])
+  city         City?             @relation(fields: [cityId], references: [id])
+  transactions Transaction[]
+
+  @@index([mcc])
+  @@index([categoryId])
+  @@map("merchants")
+}
+
+model TransactionCategory {
+  id             String @id @default(uuid()) @db.Uuid
+  organizationId String @db.Uuid
+  name           String @db.VarChar(80)
+  description    String? @db.VarChar(200)
+  parentId       String? @db.Uuid
+
+  organization Organization @relation(fields: [organizationId], references: [id])
+  parent       TransactionCategory? @relation("catParent", fields: [parentId], references: [id])
+  children     TransactionCategory[] @relation("catParent")
+  transactions Transaction[]
+  spendingRightCategories SpendingRightCategory[]
+
+  @@unique([organizationId, name])
+  @@index([organizationId, parentId])
+  @@map("transaction_categories")
+}
+
+// =====================================================================
+// APPROVALS
+// =====================================================================
+
+model ApprovalWorkflow {
+  id             String @id @default(uuid()) @db.Uuid
+  organizationId String @db.Uuid
+  name           String @db.VarChar(120)
+  entity         ApprovalSubject
+  active         Boolean @default(true)
+  createdAt      DateTime @default(now()) @db.Timestamptz(6)
+
+  organization Organization @relation(fields: [organizationId], references: [id])
+  steps        ApprovalStep[]
+  approvals    Approval[]
+  spendingRights SpendingRight[]
+
+  @@unique([organizationId, name])
+  @@map("approval_workflows")
+}
+
+model ApprovalStep {
+  id         String @id @default(uuid()) @db.Uuid
+  workflowId String @db.Uuid
+  sortOrder  Int
+  roleId     String? @db.Uuid
+  employeeId String? @db.Uuid
+  condition  Json?
+  active     Boolean @default(true)
+
+  workflow ApprovalWorkflow @relation(fields: [workflowId], references: [id], onDelete: Cascade)
+  role     EmployeeRole?    @relation(fields: [roleId], references: [id])
+  employee Employee?        @relation(fields: [employeeId], references: [id])
+  currentIn Approval[]      @relation("currentStep")
+  history  ApprovalHistory[]
+
+  @@unique([workflowId, sortOrder])
+  @@map("approval_steps")
+}
+
+model Approval {
+  id            String @id @default(uuid()) @db.Uuid
+  workflowId    String? @db.Uuid
+  currentStepId String? @db.Uuid
+  subjectType   ApprovalSubject
+  subjectId     String @db.Uuid
+  requesterId   String @db.Uuid
+  status        ApprovalStatus @default(PENDING)
+  createdAt     DateTime @default(now()) @db.Timestamptz(6)
+  decidedAt     DateTime? @db.Timestamptz(6)
+
+  workflow     ApprovalWorkflow? @relation(fields: [workflowId], references: [id])
+  currentStep  ApprovalStep?     @relation("currentStep", fields: [currentStepId], references: [id])
+  requester    Employee          @relation("approvalRequester", fields: [requesterId], references: [id])
+  history      ApprovalHistory[]
+  transaction  Transaction?      @relation(fields: [subjectId], references: [id], map: "approvals_txn_fk")
+
+  @@index([subjectType, subjectId])
+  @@index([status, createdAt])
+  @@map("approvals")
+}
+
+model ApprovalHistory {
+  id               String @id @default(uuid()) @db.Uuid
+  approvalId       String @db.Uuid
+  stepId           String? @db.Uuid
+  actorEmployeeId  String @db.Uuid
+  action           ApprovalAction
+  note             String? @db.Text
+  createdAt        DateTime @default(now()) @db.Timestamptz(6)
+
+  approval Approval      @relation(fields: [approvalId], references: [id], onDelete: Cascade)
+  step     ApprovalStep? @relation(fields: [stepId], references: [id])
+  actor    Employee      @relation(fields: [actorEmployeeId], references: [id])
+
+  @@index([approvalId, createdAt])
+  @@map("approval_history")
+}
+
+// =====================================================================
+// TRANSACTIONS (LEDGER)
+// =====================================================================
+
+model Transaction {
+  id                    String @id @default(uuid()) @db.Uuid
+  reference             String @unique @db.VarChar(30)   // human-readable TXN-YYYYMMDD-XXXXX
+  organizationId        String @db.Uuid
+  employeeId            String @db.Uuid
+  managerId             String? @db.Uuid
+  projectId             String? @db.Uuid
+  businessEventId       String? @db.Uuid
+  spendingRightId       String? @db.Uuid
+  policyId              String? @db.Uuid
+  merchantId            String? @db.Uuid
+  merchantName          String @db.VarChar(200)
+  merchantCategoryId    String? @db.Uuid
+  transactionCategoryId String? @db.Uuid
+  budgetId              String? @db.Uuid
+  costCenterId          String? @db.Uuid
+  amount                Decimal @db.Decimal(14,2)
+  currencyCode          String @db.VarChar(3)
+  upiReference          String? @db.VarChar(60)
+  paymentStatus         PaymentStatus @default(INITIATED)
+  approvalStatus        ApprovalStatus @default(PENDING)
+  riskScore             Int @default(0)
+  latitude              Decimal? @db.Decimal(9,6)
+  longitude             Decimal? @db.Decimal(9,6)
+  deviceId              String? @db.VarChar(80)
+  reason                String? @db.Text
+  method                String  @default("UPI") @db.VarChar(20)
+  occurredAt            DateTime @default(now()) @db.Timestamptz(6)
+  createdById           String? @db.Uuid
+  updatedById           String? @db.Uuid
+  createdAt             DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt             DateTime @updatedAt @db.Timestamptz(6)
+
+  organization        Organization        @relation(fields: [organizationId], references: [id])
+  employee            Employee            @relation("txnEmployee", fields: [employeeId], references: [id])
+  manager             Employee?           @relation("txnManager",  fields: [managerId],  references: [id])
+  createdBy           Employee?           @relation("txnCreatedBy", fields: [createdById], references: [id])
+  updatedBy           Employee?           @relation("txnUpdatedBy", fields: [updatedById], references: [id])
+  project             Project?            @relation(fields: [projectId], references: [id])
+  businessEvent       BusinessEvent?      @relation(fields: [businessEventId], references: [id])
+  spendingRight       SpendingRight?      @relation(fields: [spendingRightId], references: [id])
+  policy              Policy?             @relation(fields: [policyId], references: [id])
+  merchant            Merchant?           @relation(fields: [merchantId], references: [id])
+  merchantCategory    MerchantCategory?   @relation(fields: [merchantCategoryId], references: [id])
+  transactionCategory TransactionCategory? @relation(fields: [transactionCategoryId], references: [id])
+  budget              Budget?             @relation(fields: [budgetId], references: [id])
+  costCenter          CostCenter?         @relation(fields: [costCenterId], references: [id])
+  currency            Currency            @relation(fields: [currencyCode], references: [code])
+
+  approvals    Approval[]
+  riskEvents   RiskEvent[]
+  attachments  Attachment[] @relation("txnAttachments")
+
+  @@index([organizationId, occurredAt(sort: Desc)])
+  @@index([employeeId, occurredAt(sort: Desc)])
+  @@index([projectId, occurredAt(sort: Desc)])
+  @@index([costCenterId, occurredAt(sort: Desc)])
+  @@index([budgetId])
+  @@index([spendingRightId])
+  @@index([merchantId])
+  @@index([paymentStatus])
+  @@index([approvalStatus])
+  @@map("transactions")
+}
+
+// =====================================================================
+// RISK & COMPLIANCE
+// =====================================================================
+
+model RiskEvent {
+  id             String @id @default(uuid()) @db.Uuid
+  organizationId String @db.Uuid
+  transactionId  String? @db.Uuid
+  employeeId     String? @db.Uuid
+  type           RiskType
+  severity       Severity
+  score          Int
+  reason         String @db.VarChar(400)
+  resolved       Boolean @default(false)
+  resolvedById   String? @db.Uuid
+  resolvedAt     DateTime? @db.Timestamptz(6)
+  createdAt      DateTime @default(now()) @db.Timestamptz(6)
+
+  organization Organization @relation(fields: [organizationId], references: [id])
+  transaction  Transaction? @relation(fields: [transactionId], references: [id])
+  employee     Employee?    @relation("riskEmployee",  fields: [employeeId],   references: [id])
+  resolvedBy   Employee?    @relation("riskResolvedBy",fields: [resolvedById], references: [id])
+
+  @@index([organizationId, severity, resolved])
+  @@index([transactionId])
+  @@map("risk_events")
+}
+
+model Notification {
+  id             String @id @default(uuid()) @db.Uuid
+  organizationId String @db.Uuid
+  employeeId     String @db.Uuid
+  channel        NotifChannel @default(INAPP)
+  type           String  @db.VarChar(40)
+  title          String  @db.VarChar(160)
+  body           String? @db.Text
+  entityRefType  String? @db.VarChar(30)
+  entityRefId    String? @db.Uuid
+  status         NotifStatus @default(UNREAD)
+  readAt         DateTime? @db.Timestamptz(6)
+  createdAt      DateTime @default(now()) @db.Timestamptz(6)
+
+  organization Organization @relation(fields: [organizationId], references: [id])
+  employee     Employee     @relation(fields: [employeeId], references: [id])
+
+  @@index([employeeId, status])
+  @@map("notifications")
+}
+
+model AuditLog {
+  id              String @id @default(uuid()) @db.Uuid
+  organizationId  String? @db.Uuid
+  actorEmployeeId String? @db.Uuid
+  action          AuditAction
+  entity          String @db.VarChar(40)
+  entityId        String? @db.Uuid
+  before          Json?
+  after           Json?
+  ipAddress       String? @db.VarChar(45)
+  userAgent       String? @db.Text
+  createdAt       DateTime @default(now()) @db.Timestamptz(6)
+
+  organization Organization? @relation(fields: [organizationId], references: [id])
+  actor        Employee?     @relation(fields: [actorEmployeeId], references: [id])
+
+  @@index([organizationId, createdAt(sort: Desc)])
+  @@index([entity, entityId, createdAt(sort: Desc)])
+  @@index([action, createdAt(sort: Desc)])
+  @@map("audit_logs")
+}
+
+model Attachment {
+  id             String @id @default(uuid()) @db.Uuid
+  organizationId String @db.Uuid
+  entity         String @db.VarChar(40)
+  entityId       String @db.Uuid
+  filename       String @db.VarChar(200)
+  mimeType       String @db.VarChar(80)
+  sizeBytes      Int
+  storagePath    String @db.Text
+  uploadedById   String @db.Uuid
+  createdAt      DateTime @default(now()) @db.Timestamptz(6)
+
+  organization Organization @relation(fields: [organizationId], references: [id])
+  uploadedBy   Employee     @relation(fields: [uploadedById], references: [id])
+  transaction  Transaction? @relation("txnAttachments", fields: [entityId], references: [id], map: "attach_txn_fk")
+
+  @@index([entity, entityId])
+  @@map("attachments")
+}
+
+model Setting {
+  id             String @id @default(uuid()) @db.Uuid
+  organizationId String @db.Uuid
+  key            String @db.VarChar(80)
+  value          Json
+  description    String? @db.VarChar(200)
+  updatedAt      DateTime @updatedAt @db.Timestamptz(6)
+  updatedById    String? @db.Uuid
+
+  organization Organization @relation(fields: [organizationId], references: [id])
+  updatedBy    Employee?    @relation(fields: [updatedById], references: [id])
+
+  @@unique([organizationId, key])
+  @@map("settings")
+}
