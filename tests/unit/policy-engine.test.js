@@ -1,0 +1,53 @@
+// 40 unit tests for the policy engine's operator interpreter + rule evaluation.
+const { OPS, ruleTriggers } = require('../../src/modules/policy-engine/policy.engine')
+
+const tests = []
+const t = (name, fn) => tests.push({ name, fn })
+
+// --- OPS ---
+t('OPS.EQ  matches equals',        () => assert(OPS.EQ(5, 5)))
+t('OPS.EQ  rejects mismatch',      () => assert(!OPS.EQ(5, 6)))
+t('OPS.NEQ matches diff',          () => assert(OPS.NEQ('a','b')))
+t('OPS.NEQ rejects same',          () => assert(!OPS.NEQ('a','a')))
+t('OPS.GT  strict greater',        () => assert(OPS.GT(10, 5)))
+t('OPS.GT  rejects equal',         () => assert(!OPS.GT(5, 5)))
+t('OPS.GTE accepts equal',         () => assert(OPS.GTE(5, 5)))
+t('OPS.LT  rejects equal',         () => assert(!OPS.LT(5, 5)))
+t('OPS.LTE accepts equal',         () => assert(OPS.LTE(5, 5)))
+t('OPS.IN  array true',            () => assert(OPS.IN('food', ['food','fuel'])))
+t('OPS.IN  csv true',              () => assert(OPS.IN('food', 'food,fuel')))
+t('OPS.IN  false',                 () => assert(!OPS.IN('drugs', ['food','fuel'])))
+t('OPS.NOT_IN true',               () => assert(OPS.NOT_IN('drugs', ['food','fuel'])))
+t('OPS.NOT_IN false',              () => assert(!OPS.NOT_IN('food', ['food','fuel'])))
+t('OPS.CONTAINS case-insensitive', () => assert(OPS.CONTAINS('Hard Rock Cafe', 'rock')))
+t('OPS.CONTAINS negative',         () => assert(!OPS.CONTAINS('CCD', 'rock')))
+t('OPS.BETWEEN inside',            () => assert(OPS.BETWEEN(50, [10, 100])))
+t('OPS.BETWEEN boundary lo',       () => assert(OPS.BETWEEN(10, [10, 100])))
+t('OPS.BETWEEN boundary hi',       () => assert(OPS.BETWEEN(100, [10, 100])))
+t('OPS.BETWEEN outside',           () => assert(!OPS.BETWEEN(200, [10, 100])))
+
+// --- ruleTriggers ---
+const mkRule = (o) => ({ ruleType: 'PER_TRANSACTION_LIMIT', field: 'amount', operator: 'LTE', valueNumeric: 1000, actionOnViolation: 'BLOCK', ...o })
+t('PER_TXN LTE fires above limit',  () => assert(ruleTriggers(mkRule(), { amount: 1500 })))
+t('PER_TXN LTE ok at limit',        () => assert(!ruleTriggers(mkRule(), { amount: 1000 })))
+t('PER_TXN LTE ok below',           () => assert(!ruleTriggers(mkRule(), { amount: 999 })))
+t('DAILY_LIMIT sums dailySpent',    () => assert(ruleTriggers(mkRule({ ruleType: 'DAILY_LIMIT', valueNumeric: 5000 }), { amount: 1000, dailySpent: 4500 })))
+t('DAILY_LIMIT under threshold',    () => assert(!ruleTriggers(mkRule({ ruleType: 'DAILY_LIMIT', valueNumeric: 5000 }), { amount: 1000, dailySpent: 3000 })))
+t('WEEKLY_LIMIT sums weeklySpent',  () => assert(ruleTriggers(mkRule({ ruleType: 'WEEKLY_LIMIT', valueNumeric: 20000 }), { amount: 1000, weeklySpent: 19500 })))
+t('MONTHLY_LIMIT sums monthlySpent',() => assert(ruleTriggers(mkRule({ ruleType: 'MONTHLY_LIMIT', valueNumeric: 50000 }), { amount: 500, monthlySpent: 49600 })))
+t('APPROVAL_THRESHOLD fires above', () => assert(ruleTriggers(mkRule({ ruleType: 'APPROVAL_THRESHOLD', valueNumeric: 5000, actionOnViolation: 'REQUIRE_APPROVAL' }), { amount: 6000 })))
+t('APPROVAL_THRESHOLD ok below',    () => assert(!ruleTriggers(mkRule({ ruleType: 'APPROVAL_THRESHOLD', valueNumeric: 5000 }), { amount: 4000 })))
+t('CATEGORY_LIMIT skips wrong cat', () => assert(!ruleTriggers(mkRule({ ruleType: 'CATEGORY_LIMIT', field: 'Hotel & Stay', valueNumeric: 5000 }), { amount: 6000, categoryName: 'Food & Dining' })))
+t('CATEGORY_LIMIT fires right cat', () => assert(ruleTriggers(mkRule({ ruleType: 'CATEGORY_LIMIT', field: 'Hotel & Stay', valueNumeric: 5000 }), { amount: 6000, categoryName: 'Hotel & Stay' })))
+t('CATEGORY_LIMIT ok right cat',    () => assert(!ruleTriggers(mkRule({ ruleType: 'CATEGORY_LIMIT', field: 'Food & Dining', valueNumeric: 1500 }), { amount: 1400, categoryName: 'Food & Dining' })))
+t('RESTRICTED_CATEGORY EQ fires',   () => assert(ruleTriggers(mkRule({ ruleType: 'RESTRICTED_CATEGORY', operator: 'EQ', valueText: 'Entertainment', field: 'Entertainment' }), { categoryName: 'Entertainment' })))
+t('RESTRICTED_CATEGORY EQ no fire', () => assert(!ruleTriggers(mkRule({ ruleType: 'RESTRICTED_CATEGORY', operator: 'EQ', valueText: 'Entertainment', field: 'Entertainment' }), { categoryName: 'Food & Dining' })))
+t('ALLOWED_CATEGORY IN semantics',  () => assert(ruleTriggers(mkRule({ ruleType: 'ALLOWED_CATEGORY', operator: 'IN', valueText: 'Food & Dining,Travel' }), { categoryName: 'Food & Dining' })))
+t('MERCHANT_RULE EQ mcc match',     () => assert(ruleTriggers(mkRule({ ruleType: 'MERCHANT_RULE', operator: 'EQ', valueText: '5813' }), { merchantMcc: '5813' })))
+t('MERCHANT_RULE EQ mcc miss',      () => assert(!ruleTriggers(mkRule({ ruleType: 'MERCHANT_RULE', operator: 'EQ', valueText: '5813' }), { merchantMcc: '5812' })))
+t('TIME_RULE evaluates hour of day',() => assert(ruleTriggers(mkRule({ ruleType: 'TIME_RULE', operator: 'GT', valueNumeric: 22 }), { occurredAt: '2025-06-01T23:30:00Z' })))
+t('TIME_RULE no trigger by day',    () => assert(!ruleTriggers(mkRule({ ruleType: 'TIME_RULE', operator: 'GT', valueNumeric: 22 }), { occurredAt: '2025-06-01T10:00:00Z' })))
+t('VELOCITY_RULE fires above',      () => assert(ruleTriggers(mkRule({ ruleType: 'VELOCITY_RULE', operator: 'GT', valueNumeric: 5 }), { recentTxnCount: 8 })))
+t('VELOCITY_RULE ok below',         () => assert(!ruleTriggers(mkRule({ ruleType: 'VELOCITY_RULE', operator: 'GT', valueNumeric: 5 }), { recentTxnCount: 3 })))
+
+module.exports = tests
